@@ -8,3 +8,7 @@ data/
 build/*
 !build/icon.ico
 !build/icon.png
+
+# billion-context-dsh 内置 acp-kernel 运行时依赖（随包分发，防止插件刷新只换包不装依赖）
+!assets/plugins/billion-context-dsh/node_modules/
+!assets/plugins/billion-context-dsh/node_modules/acp-kernel/**

@@ -8,9 +8,9 @@ window.__ModuleLoader__.load({
 		let react_jsx_runtime = require("react/jsx-runtime");
 		/**
 		 * 「终端」视图：注册到 conversation.view，与 对话/轨迹/文件 并列。
-		 * 宿主插件通过 SSE 提供当前会话项目目录下的持久 shell（cmd.exe/sh），
-		 * 支持历史、清屏、重启、断线自动重连与 snapshot 回放。
-		 * 轻量 ANSI 渲染（SGR 前景色/加粗）；非 PTY，全屏交互程序（vim 等）不支持。
+		 * 个人分支：复用 dsh-better-sidebar 的 xterm + node-pty 真终端
+		 * （/sidebar/bundle/terminal.js + /sidebar/ws/terminal），WSL 下进入
+		 * 真实 shell 环境；旧的 SSE 非 PTY 实现保留但不再使用。
 		 */
 
 		const TOKEN_KEY = "dsh.term.token";

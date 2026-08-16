@@ -2,18 +2,24 @@
   "name": "@deepseek-ai/dsh-terminal-tab",
   "version": "0.1.0",
   "private": true,
-  "description": "DSH Desktop 配套终端：与对话/轨迹/文件并列的会话内交互式命令行（SSE 流式，非 PTY）",
+  "description": "DSH Desktop 会话终端：会话详情「终端」标签复用 dsh-better-sidebar 的 xterm + node-pty 真终端",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    ".": { "default": "./lib/index.js" },
-    "./client": { "default": "./lib/client.js" },
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "license": "MIT",
   "dsh": {
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-ui-conversation"],
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
       "platform": "web"
     }
   }

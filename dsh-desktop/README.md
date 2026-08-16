@@ -152,13 +152,6 @@
 - **端口预览**：预览面板地址栏可直接输入 `3000` / `localhost:5173` 等，宿主插件探测本机回环监听端口（`GET /api/dsh-files/ports`）并以徽章列出，点击即预览；`GET /api/dsh-files/check` 提供在线状态检查（面板状态栏显示 HTTP 状态）。
 - 预览面板带前进/后退/刷新/外部打开（系统浏览器）；全部路由仅接受回环地址请求。
 
-## 会话内终端
-
-- 新增「终端」标签页（与 对话/轨迹/文件 并列）：在当前会话的项目目录下启动持久 PowerShell shell，SSE 流式输出、命令历史（↑/↓）、清屏、重启、断线自动重连（切换标签页/刷新不丢，回放最近 512KB 输出）。
-- **编码**：宿主插件用显式 UTF-8 的 mini-REPL（自建读行循环 + `Invoke-Expression`）绕开 PowerShell 5.1 原生 REPL 对重定向 stdin 的编码漂移，中文输入输出双向干净。
-- **限制**：非 PTY（vim/htop 等全屏交互程序不支持）；PowerShell 语法（`&&` 用 `;` 或 `if ($?)` 替代）；多行脚本请用 `;` 分行。
-- 宿主插件路由：`GET /dsh-files/term/events`（SSE）、`POST /dsh-files/term/input`、`POST /dsh-files/term/close`，全部仅接受回环地址请求；断开后 shell 保留 15 分钟。
-
 ## 会话完成通知
 
 - 监听 dsh 会话日志（`<DSH_HOME>/sessions/**/session.jsonl.zstd`），解码与官方持久化实现一致的 zstd 多帧 + JSONL 格式。
@@ -228,13 +221,13 @@ npm run dist                   # 构建 portable + NSIS 安装包，输出到 di
 
 ### 把配套插件装进你自己 WSL 里的 dsh（可选，与后端模式无关）
 
-如果你在 WSL 里另有自己装的 dsh（checkout 开发版或 npm 版）——壳自带的配套插件（余额、文件视图、终端、浮窗、插件市场、自定义提示词、第三方思考、识图等）是壳私有打包的（不进 npm），想让它也用上，在 WSL 里执行：
+如果你在 WSL 里另有自己装的 dsh（checkout 开发版或 npm 版）——壳自带的配套插件（余额、文件视图、浮窗、插件市场、自定义提示词、第三方思考、识图等）是壳私有打包的（不进 npm），想让它也用上，在 WSL 里执行：
 
 ```bash
 node dsh-desktop/scripts/sync-companion-plugins.js ~/.dsh --with-patches
 ```
 
-（`--dry-run` 可先预览；`--with-patches` 额外应用「会话列表闪跳修复 + 设置暴露白名单」两个运行时补丁，否则自定义提示词/第三方思考的设置页可能显示「设置不可用」。脚本同时会把壳内置的 8 个 Agent 预设同步进能找到的 dsh 包 `config/agent-presets`——`<DSH_HOME>/agent`（如 WSL 托管布局的 `~/.dsh-desktop/agent`）与 PATH 上的 dsh 命令会自动探测，其它安装位置可用 `--dsh-package <dsh 包目录>` 显式指定。）插件与预设都在 **dsh web 重启后**才挂载（profile 补丁层与包内预设目录在启动时读取）：重启 `dsh web`（checkout 开发模式 `pnpm dsh web`；npm 安装版 `dsh web`），注意会中断正在跑的会话（会话数据在磁盘上，可继续）。终端插件在 POSIX 下自动使用 `sh -i`，其余插件跨平台。卸载：删掉 `cordis.patch.yml` 中对应 `insert` 条目与 `profiles/web/node_modules` 下的对应包目录即可。
+（`--dry-run` 可先预览；`--with-patches` 额外应用「会话列表闪跳修复 + 设置暴露白名单」两个运行时补丁，否则自定义提示词/第三方思考的设置页可能显示「设置不可用」。脚本同时会把壳内置的 8 个 Agent 预设同步进能找到的 dsh 包 `config/agent-presets`——`<DSH_HOME>/agent`（如 WSL 托管布局的 `~/.dsh-desktop/agent`）与 PATH 上的 dsh 命令会自动探测，其它安装位置可用 `--dsh-package <dsh 包目录>` 显式指定。）插件与预设都在 **dsh web 重启后**才挂载（profile 补丁层与包内预设目录在启动时读取）：重启 `dsh web`（checkout 开发模式 `pnpm dsh web`；npm 安装版 `dsh web`），注意会中断正在跑的会话（会话数据在磁盘上，可继续）。卸载：删掉 `cordis.patch.yml` 中对应 `insert` 条目与 `profiles/web/node_modules` 下的对应包目录即可。
 
 ### wsl：壳在 WSL 里托管自己的 dsh（自动更新全闭环）
 

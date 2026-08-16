@@ -125,7 +125,7 @@
  - **渲染进程崩溃自动恢复**：`render-process-gone` 后指数退避重载（0.8s 起步，封顶 15s），连续失败第 3 次重建 BrowserWindow（保持隐藏/托盘状态）；超过上限显示本地恢复页（重新加载 / 重启客户端 / 打开日志）并通知；稳定存活 30s 才清零计数
 - **渲染心跳与假死恢复**：preload 每 5 秒上报心跳，主进程 30 秒未收到则恢复；`unresponsive` 15 秒后同样恢复。
 - **会话历史兼容**：打包时 `afterPack` 自动修补内置 `@deepseek-ai/dsh-session` 事件词汇表，接受 dsh-agent-teams / dsh-message-edit / dsh-web-search-exa 的事件，修复 `SessionFormatUnsupportedError`。
-- **内置 M3 皮肤**：Material Design 3（Material You）主题已集成进 preload，设置 → 外观 增加 M3 皮肤按钮；本个人分支首次启动默认启用，可手动关闭，偏好持久化。
+- **内置 10 款社区皮肤**：从 Deepseek-Harness-EAC 内置皮肤库迁入（blue-fantasy / dragon-heir / maid-atelier / miku / minecraft / qq98 / ths / trading / whale-song / xp），设置 → 皮肤 中浏览预览并一键切换（切换后重启服务生效）；M3 主题仍从设置 → 外观 启用。
 - **侧边栏 GitGraph**：VSCode 风格的分支地图概览（SVG 泳道图 + 分支/标签显示），自动发现「外层仓库 + 内层仓库」并在侧边栏一键切换查看。
 - **内置 Agent 预设（3 个）**：`anchored-standard`（显示名「官pro」）、`v4-flash-godmode-opencode-go`（显示名「goflash」）、`router-standard`（显示名「router-standard」），打包时自动写入内置 dsh CLI；详细来源与许可见 [docs/agent-presets.md](docs/agent-presets.md)。
 
@@ -290,6 +290,7 @@ dsh-desktop/
 │   ├── sponsor/          # 赞助收款码（支付宝 / 微信，「请作者喝咖啡」面板与本文档共用）
 │   ├── agent-presets/    # 3 个内置预设（anchored-standard=官pro / v4-flash-godmode-opencode-go=goflash / router-standard），local 打包写入 / WSL 启动与更新时经 UNC 同步
 │   ├── themes/           # M3 (Material Design 3) 皮肤（CSS / 预览 / 设计文件），首次启动默认启用
+│   ├── skins/            # 10 款内置社区皮肤包（设置 → 皮肤 切换）
 │   └── plugins/          # dsh-balance / dsh-file-changes / dsh-gitgraph / dsh-vision / zat-dsh-engine / dsh-better-sidebar / harness-pet / dsh-super-injector / dsh-wsl-settings（设置页「WSL 后端」栏）等，启动时自动同步进 web profile
 ├── scripts/
 │   ├── fetch-node.js     # 内置 node.exe 复制脚本

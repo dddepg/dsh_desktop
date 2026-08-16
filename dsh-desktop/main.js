@@ -2220,6 +2220,7 @@ const COMPANION_PLUGINS = [
   { id: 'client-file-changes', name: '@deepseek-ai/dsh-client-file-changes' },
   { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
   { id: 'gitgraph', name: '@deepseek-ai/dsh-gitgraph' },
+  { id: 'skin-switch', name: '@deepseek-ai/dsh-skin-switch' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
   { id: 'harness-pet', name: 'harness-pet' },
@@ -2231,6 +2232,22 @@ const COMPANION_PLUGINS = [
   { id: 'wsl-settings', name: '@deepseek-ai/dsh-wsl-settings' },
   { id: 'dsh-vision', name: '@dsh-external/dsh-vision' },
 ];
+
+// 内置皮肤包目录：assets/skins/<id>/。每个皮肤是完整的 dsh client 插件包
+// （package.json + lib/ + skin.json + 预览图与许可文件），同步进 web profile
+// 时按包名 scope 落位，并默认以 disabled: true 写入 cordis.patch.yml；
+// 「设置 → 皮肤」由 dsh-skin-switch 负责切换。
+const SKINS_DIR = path.join(__dirname, 'assets', 'skins');
+const SKIN_PACKAGE_FILES = [
+  'package.json', 'skin.json', 'cordis.patch.yml',
+  'LICENSE', 'LICENSE.md', 'NOTICE', 'NOTICE.md',
+  'README.md', 'README.zh.md', 'THIRD-PARTY-NOTICES.md',
+];
+const SKIN_SUBDIRS = ['lib', 'preview', 'src', 'assets', 'vendor', 'node_modules', 'data'];
+
+function readJsonFile(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
 
 function companionDirName(p) {
   const slash = p.name.indexOf('/');
@@ -2414,6 +2431,37 @@ function syncCompanionPlugins() {
       if (isBundle) bundleNames.add(p.name);
     }
 
+    // 内置皮肤：不是 bundle 清单，而是按 skin.json 的 wiring.id 注册为
+    // ui-skin-* patch 行（默认全部 disabled）。dsh-skin-switch 运行时改写
+    // disabled 状态实现互斥切换。
+    const skinRows = [];
+    try {
+      for (const entry of fs.readdirSync(SKINS_DIR, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const src = path.join(SKINS_DIR, entry.name);
+        const pkg = readJsonFile(path.join(src, 'package.json'));
+        if (!pkg || typeof pkg.name !== 'string' || !pkg.name.includes('/')) continue;
+        const skin = readJsonFile(path.join(src, 'skin.json'));
+        const rowId = skin && skin.wiring && typeof skin.wiring.id === 'string' ? skin.wiring.id : '';
+        if (!/^ui-skin-[\w-]+$/.test(rowId)) continue;
+        const dest = path.join(profileModules, '..', pkg.name);
+        fs.mkdirSync(dest, { recursive: true });
+        for (const f of SKIN_PACKAGE_FILES) {
+          const sf = path.join(src, f);
+          if (fs.existsSync(sf)) fs.copyFileSync(sf, path.join(dest, f));
+        }
+        for (const sub of SKIN_SUBDIRS) {
+          const sdir = path.join(src, sub);
+          if (fs.existsSync(sdir)) {
+            fs.cpSync(sdir, path.join(dest, sub), { recursive: true, force: true });
+          }
+        }
+        skinRows.push({ id: rowId, name: pkg.name, disabled: true });
+      }
+    } catch (err) {
+      log('boot', '扫描内置皮肤失败: ' + err.message);
+    }
+
     const manifestFile = path.join(profileDir, 'package.json');
     let manifest = {};
     try { manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')); } catch { manifest = { name: 'dsh-profile-web', private: true }; }
@@ -2455,32 +2503,37 @@ function syncCompanionPlugins() {
       }
     }
 
-    // 非 bundle 插件注册到 profile 的 patch 层（幂等）。
+    // 非 bundle 插件与内置皮肤统一注册到 profile 的 patch 层（幂等）。
     const patchFile = path.join(profileDir, 'cordis.patch.yml');
     let patch = '';
     try { patch = fs.readFileSync(patchFile, 'utf8'); } catch { patch = ''; }
     let changed = false;
+    const patchRows = [];
     for (const p of COMPANION_PLUGINS) {
       if (bundleNames.has(p.name)) continue;
-      // 该 id 在 patch 里已存在：若它现在的 name 与当前版本不一致（例如终端
-      // 包改名 @deepseek-ai/dsh-terminal → dsh-terminal-tab），就地改名为当前
-      // 值。否则旧名残留会让配套插件与 agent 内置终端重复注册路由、或加载
-      // 到已不属于本版本的包。只改 name 行，不动用户自己加的其它行。
-      const idNameRe = new RegExp('(id:\\s*' + p.id + '\\b[^\\n]*\\n\\s*name:\\s*\\x27)([^\\x27]*)(\\x27)');
-      const m = patch.match(idNameRe);
-      if (m) {
-        if (m[2] !== p.name) {
-          patch = patch.replace(idNameRe, '$1' + p.name + '$3');
-          changed = true;
+      patchRows.push({ id: p.id, name: p.name, disabled: false, rename: true });
+    }
+    for (const skin of skinRows) patchRows.push({ id: skin.id, name: skin.name, disabled: true, rename: false });
+    for (const p of patchRows) {
+      if (p.rename) {
+        // 该 id 在 patch 里已存在：若它现在的 name 与当前版本不一致（例如历史
+        // 包改名），就地改名为当前值。只改 name 行，不动用户自己加的其它行。
+        const idNameRe = new RegExp('(id:\s*' + p.id + '\b[^\n]*\n\s*name:\s*\x27)([^\x27]*)(\x27)');
+        const m = patch.match(idNameRe);
+        if (m) {
+          if (m[2] !== p.name) {
+            patch = patch.replace(idNameRe, '$1' + p.name + '$3');
+            changed = true;
+          }
+          continue;
         }
-        continue;
       }
       // 尊重用户已有配置：id 只要出现过（例如用户手写的 disabled 条目）就不再
       // 自动插入，避免「禁用后下次启动又被加回来」或同 id 重复条目导致 loader 报错。
-      if (new RegExp('(?:^|\\n)\\s*-?\\s*id\\s*:\\s*' + p.id + '\\b').test('\n' + patch)) {
+      if (new RegExp('(?:^|\n)\s*-?\s*id\s*:\s*' + p.id + '\b').test('\n' + patch)) {
         continue;
       }
-      const block = `- insert:\n    - id: ${p.id}\n      name: '${p.name}'\n`;
+      const block = `- insert:\n    - id: ${p.id}\n      name: '${p.name}'\n${p.disabled ? '      disabled: true\n' : ''}`;
       if (/^\s*\[\]\s*$/m.test(patch)) patch = patch.replace(/\[\]/m, block);
       else if (patch.trim() === '') patch = '# dsh web profile patch（由 DSH Desktop 维护）\n' + block;
       else patch = patch.replace(/\s*$/, '\n') + block;
@@ -2488,7 +2541,7 @@ function syncCompanionPlugins() {
     }
     if (changed) {
       fs.writeFileSync(patchFile, patch);
-      log('boot', '已同步配套插件到 web profile: ' + COMPANION_PLUGINS.map((p) => p.id).join(', '));
+      log('boot', '已同步配套插件/皮肤到 web profile: ' + patchRows.map((p) => p.id).join(', '));
     }
   } catch (err) {
     log('boot', '同步配套插件失败: ' + err.message);

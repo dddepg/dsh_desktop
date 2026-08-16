@@ -1,0 +1,22 @@
+{
+  "name": "@deepseek-ai/dsh-gitgraph",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Desktop 配套插件：侧边栏 GitGraph 分支地图概览，支持内外双仓库切换（DSH Desktop）",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": { "default": "./lib/index.js" },
+    "./client": { "default": "./lib/client.js" },
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "dsh-better-sidebar": ">=0.4.0"
+  }
+}

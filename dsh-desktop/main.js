@@ -2219,6 +2219,7 @@ const COMPANION_PLUGINS = [
   { id: 'file-changes', name: '@deepseek-ai/dsh-file-changes' },
   { id: 'client-file-changes', name: '@deepseek-ai/dsh-client-file-changes' },
   { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
+  { id: 'gitgraph', name: '@deepseek-ai/dsh-gitgraph' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
   { id: 'harness-pet', name: 'harness-pet' },

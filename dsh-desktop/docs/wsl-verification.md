@@ -55,8 +55,8 @@
 
 ### 2.4 数据面与插件（wsl 模式）
 
-- [ ] WSL 内 `cat ~/.dsh-desktop/profiles/web/cordis.patch.yml` → 10 条 `- insert:`（余额/文件/终端/浮窗/提示词/思考/识图/WSL 设置等）；
-- [ ] UI 中：对话底部余额小部件、详情面板「文件」标签页（diff 查看）、「终端」标签页（复用 dsh-better-sidebar 的 node-pty 真终端）、会话浮窗、插件市场、设置页「自定义提示词」可用；
+- [ ] WSL 内 `cat ~/.dsh-desktop/profiles/web/cordis.patch.yml` → 11 条 `- insert:`（余额/文件/终端/GitGraph/浮窗/提示词/思考/识图/WSL 设置等）；
+- [ ] UI 中：对话底部余额小部件、详情面板「文件」标签页（diff 查看）、「终端」标签页（复用 dsh-better-sidebar 的 node-pty 真终端）、侧边栏 GitGraph（外层/内层仓库可切换）、会话浮窗、插件市场、设置页「自定义提示词」可用；
 - [ ] WSL 内目录布局正确：`agent/` `agent-prev/`（更新后）`agent-staging/`（仅安装期间）`profiles/` `sessions/` `dsh.pid`；
 - [ ] WSL 内 `ls ~/.dsh-desktop/agent/node_modules/@deepseek-ai/dsh/config/agent-presets` → 除 npm 包自带的 code/cordis/minimal/standard 外，只有 `anchored-standard`（官pro）/ `v4-flash-godmode-opencode-go`（goflash）/ `router-standard` 3 个壳内置预设；UI 的模式列表与 local 一致；
 - [ ] 会话完成 → Windows Toast 通知弹出（经 UNC 读 WSL 会话日志）；

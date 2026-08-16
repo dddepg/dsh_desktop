@@ -42,6 +42,7 @@ const COMPANION_PLUGINS = [
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
   { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
+  { id: 'dsh-navbar', name: '@vlln/dsh-navbar' },
   { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
   { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
   { id: 'prompt-custom', name: '@deepseek-ai/dsh-prompt-custom' },
@@ -52,7 +53,7 @@ const COMPANION_PLUGINS = [
 
 const PLUGIN_FILES = [
   'package.json', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md',
-  'lib/index.js', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
+  'lib/index.js', 'lib/index.mjs', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
   'dsh.plugin.json',
 ];
 

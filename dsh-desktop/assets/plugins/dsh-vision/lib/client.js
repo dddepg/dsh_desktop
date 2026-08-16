@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
       baseURLLabel: "API 地址",
       baseURLHint: "OpenAI 兼容 base URL，例如 https://open.bigmodel.cn/api/paas/v4 或 http://localhost:11434/v1",
       apiKeyLabel: "API 密钥",
-      apiKeyHint: "留空时依次读取 DSH_VISION_API_KEY / ZHIPUAI_API_KEY / DASHSCOPE_API_KEY；本地 Ollama 可留空",
+      apiKeyHint: "留空 = 保持已保存的密钥（密钥保存后不回显）；也可用环境变量 DSH_VISION_API_KEY / ZHIPUAI_API_KEY / DASHSCOPE_API_KEY；本地 Ollama 可留空",
       modelLabel: "模型",
       modelHint: "例如 glm-4.6v-flash（智谱免费）/ qwen3-vl-flash / glm-4.6v / qwen3-vl:4b",
       fallbackLabel: "备用模型",
@@ -75,7 +75,7 @@ window.__ModuleLoader__.load({
         const v = snap.value || {};
         setForm({
           baseURL: String(v.baseURL || DEFAULTS.baseURL),
-          apiKey: String(v.apiKey || ""),
+          apiKey: "",
           model: String(v.model || DEFAULTS.model),
           fallbackModels: Array.isArray(v.fallbackModels) ? v.fallbackModels.join(", ") : "",
           maxTokens: String(v.maxTokens ?? DEFAULTS.maxTokens),
@@ -98,9 +98,9 @@ window.__ModuleLoader__.load({
         setBusy(true);
         setSaved(false);
         try {
+          const apiKeyValue = (form.apiKey || "").trim();
           const values = {
             baseURL: (form.baseURL || "").trim() || DEFAULTS.baseURL,
-            apiKey: (form.apiKey || "").trim(),
             model: (form.model || "").trim() || DEFAULTS.model,
             fallbackModels: (form.fallbackModels || "").split(",").map((s) => s.trim()).filter(Boolean),
             maxTokens: numberOr(form.maxTokens, 2048),
@@ -109,8 +109,18 @@ window.__ModuleLoader__.load({
           };
           for (const [key, value] of Object.entries(values)) {
             const have = (snap.value || {})[key];
+            // 不把「等于插件默认值」且存储里没有的字段写进配置：默认值本就由
+            // 宿主生效，写死会把未来模型/端点变化的适配空间一起固化（例如
+            // maxTokens 2048 遇上旧模型上限 1024 直接 400）。
+            // 注：apiKey 不在 DEFAULTS 中，不受此跳过影响（保留 #32 的语义）。
+            if (have === undefined && DEFAULTS[key] !== undefined && JSON.stringify(value) === JSON.stringify(DEFAULTS[key])) continue;
             if (JSON.stringify(value) !== JSON.stringify(have)) await scope.set(key, value);
           }
+          // apiKey 是 role('secret') 字段：settings.describe 会脱敏、永不回显，
+          // 表单里它恒为空。只有用户这次输入了非空新值才写入；留空 = 保持
+          // 已保存的密钥 —— 否则「改模型/地址后点保存」会把已存密钥静默清空
+          // （用户反馈“识图 API 密钥没法保存”的根因）。
+          if (apiKeyValue !== "") await scope.set("apiKey", apiKeyValue);
           setSaved(true);
         } finally {
           setBusy(false);

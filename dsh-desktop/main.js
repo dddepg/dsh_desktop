@@ -14,7 +14,7 @@
 // modules (sharp, node-pty, koffi, ...) match the Node ABI they were
 // installed for. We deliberately never rebuild them against Electron.
 
-const { app, BrowserWindow, Menu, Tray, shell, dialog, Notification, ipcMain, clipboard, crashReporter } = require('electron');
+const { app, BrowserWindow, Menu, Tray, shell, dialog, Notification, ipcMain, clipboard, crashReporter, screen } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -26,10 +26,52 @@ const updater = require('./updater');
 const clientUpdater = require('./client-updater');
 const balance = require('./balance');
 const wslBackend = require('./wsl-backend');
+const { createGpuCrashGuard } = require('./scripts/gpu-crash-guard');
 const { installBuiltinPresets } = require('./scripts/install-minimal-win-preset');
 const { SessionWatcher, scanZstdFrames } = require('./session-watcher');
 const { RendererRecovery } = require('./renderer-recovery');
+const { ensureCoreBundles, CORE_BUNDLE_NAMES } = require('./profile-manifest');
+const { dedupePatchEntries, dropBlocksByIds, parseFailedLoaderIds, mapPackagesToPatchIds } = require('./profile-patch-heal');
+const { patchWebSearchBaseUrl } = require('./scripts/patch-web-search-baseurl');
+const { patchMenuViewport } = require('./scripts/patch-menu-viewport');
 const zlib = require('node:zlib');
+
+// ---------------------------------------------------------------------------
+// 启动期崩溃兜底（issue #30「便携版有进程无界面」）：模块加载 / 启动早期
+// 的任何未捕获异常都落盘 <userData>/logs/startup-crash.log，且启动完成前置
+// 可见错误框（绝不静默失败）。userData 可能尚未重定向，故便携版优先写到
+// exe 旁 data/logs，失败再退回系统临时目录。
+// ---------------------------------------------------------------------------
+let bootFinished = false; // boot() 建窗完成后置 true，之后不再弹启动期错误框
+function startupCrashLogFile() {
+  let base;
+  try {
+    base = process.env.PORTABLE_EXECUTABLE_DIR
+      ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data')
+      : app.getPath('userData');
+  } catch {
+    base = path.join(os.tmpdir(), 'dsh-desktop');
+  }
+  const dir = path.join(base, 'logs');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return path.join(dir, 'startup-crash.log');
+}
+function recordStartupCrash(kind, err) {
+  try {
+    fs.appendFileSync(startupCrashLogFile(), `[${new Date().toISOString()}] [${kind}] ${(err && err.stack) || err}\n`, 'utf8');
+  } catch {}
+}
+process.on('uncaughtException', (err) => {
+  recordStartupCrash('uncaughtException', err);
+  if (!bootFinished && err) {
+    try {
+      dialog.showErrorBox('DSH Desktop 启动异常', String((err && err.message) || err) + '\n\n详细日志：' + startupCrashLogFile());
+    } catch {}
+  }
+});
+process.on('unhandledRejection', (reason) => {
+  recordStartupCrash('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
+});
 
 // ---------------------------------------------------------------------------
 // H2/H3 路径围栏：文件还原/打开只允许「会话 cwd」之下的项目文件。
@@ -119,6 +161,18 @@ const FLOAT_MAX = 8; // 浮窗总数上限，防资源滥用
 const floatWindows = new Set(); // BrowserWindow 集合
 const floatBySession = new Map(); // sessionId -> BrowserWindow（同一会话只允许一个浮窗）
 let sponsorWindow = null; // 「请作者喝咖啡」独立小窗（单例）
+
+// ---------------------------------------------------------------------------
+// 桌面宠物原生小窗（harness-pet）：主窗最小化后宠物仍可见。
+// 插件 PiP 方案在 Electron 里不可用（requestWindow 抛 Internal error），
+// 这里用独立透明置顶 BrowserWindow 承载同一 Web UI 的「宠物小窗模式」
+// （--dsh-pet=1，preload 据此隐藏除宠物外的全部界面）。
+// ---------------------------------------------------------------------------
+const PET_WINDOW_W = 360;
+const PET_WINDOW_H = 420;
+let petWindow = null; // 宠物小窗单例（BrowserWindow）
+let petAutoOpen = false; // 主窗插件上报：宠物启用且开启「最小化自动弹出小窗」
+let petPosTimer = null; // 小窗位置防抖保存定时器
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -226,6 +280,12 @@ function startWatchdog() {
 // DSH_HOME 时这些链接常被还原成真实目录，dsh web 会以 exit code 1 启动失败。
 // 这里在每次启动 dsh 前调用官方 healProfilesModuleFallback；它若报
 // "exists and is not a symlink"，就移除该真实目录后重试，直到修复完成。
+//
+// 启动提速：健康状态下（依赖闭包未变、链接完好）用持久化快照做快速校验
+// （逐项 lstat/readlink），全部一致就直接跳过耗时的
+// import('@deepseek-ai/dsh-app-boot') + BFS + heal。快照签名包含 dsh
+// package.json 的路径/大小/mtime，dsh 升级后自动失效重算（升级后首次
+// 启动仍会完整 heal 一次，之后走快速路径）。
 // ---------------------------------------------------------------------------
 function dshPackageJson() {
   const bin = dshBin();
@@ -239,7 +299,104 @@ function dshPackageJson() {
   try { return require.resolve('@deepseek-ai/dsh/package.json'); } catch { return candidates[1]; }
 }
 
+function fallbackSnapshotPath() {
+  return path.join(userDataDir, 'profile-fallback-cache.json');
+}
+
+function fallbackAnchorSignature(anchor) {
+  try {
+    const st = fs.statSync(anchor);
+    return anchor + '|' + st.size + '|' + Math.round(st.mtimeMs);
+  } catch {
+    return anchor + '|?';
+  }
+}
+
+// 快照当前 fallback 目录：链接名（可能带 @scope 前缀）→ readlink 目标。
+// heal 创建的链接里 @scope 目录本身是真实目录、包 junction 在它里面，所以
+// 递归收集 `scope/pkg`；任何既不是 junction、也不是 @scope 真实目录的顶层
+// 项（云同步还原成真实目录的典型症状）都返回 null，表示需要完整 heal。
+function snapshotFallbackLinks(modulesRoot) {
+  const entries = {};
+  const addLink = (name) => {
+    const link = path.join(modulesRoot, name);
+    try {
+      const st = fs.lstatSync(link);
+      if (!st.isSymbolicLink()) return false;
+      entries[name] = fs.readlinkSync(link);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let top;
+  try { top = fs.readdirSync(modulesRoot, { withFileTypes: true }); } catch { return null; }
+  for (const e of top) {
+    let st;
+    try { st = fs.lstatSync(path.join(modulesRoot, e.name)); } catch { return null; }
+    if (st.isSymbolicLink()) {
+      if (!addLink(e.name)) return null;
+      continue;
+    }
+    if (st.isDirectory() && e.name.startsWith('@')) {
+      let inner;
+      try { inner = fs.readdirSync(path.join(modulesRoot, e.name)); } catch { return null; }
+      for (const pkg of inner) {
+        if (!addLink(e.name + '/' + pkg)) return null;
+      }
+      continue;
+    }
+    return null;
+  }
+  return entries;
+}
+
+function verifyFallbackSnapshot(home, anchor, cache) {
+  if (!cache || cache.v !== 1) return false;
+  if (cache.home !== home || cache.anchor !== anchor) return false;
+  if (cache.anchorSignature !== fallbackAnchorSignature(anchor)) return false;
+  const expected = cache.entries;
+  if (!expected || typeof expected !== 'object') return false;
+  const names = Object.keys(expected);
+  if (names.length === 0) return false;
+  const modulesRoot = path.join(home, 'profiles', 'node_modules');
+  for (const name of names) {
+    const link = path.join(modulesRoot, name);
+    try {
+      const st = fs.lstatSync(link);
+      if (!st.isSymbolicLink()) return false;
+      if (fs.readlinkSync(link) !== expected[name]) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function saveFallbackSnapshot(home, anchor, entries) {
+  try {
+    fs.writeFileSync(fallbackSnapshotPath(), JSON.stringify({
+      v: 1,
+      home,
+      anchor,
+      anchorSignature: fallbackAnchorSignature(anchor),
+      entries,
+    }));
+  } catch (err) {
+    log('boot', '写 profile fallback 快照失败: ' + err.message);
+  }
+}
+
 async function repairProfileFallback(home) {
+  const anchor = dshPackageJson();
+  const modulesRoot = path.join(home, 'profiles', 'node_modules');
+  // 快速路径：快照存在且逐项校验通过 → 跳过 import + BFS + heal。
+  let cache = null;
+  try { cache = JSON.parse(fs.readFileSync(fallbackSnapshotPath(), 'utf8')); } catch {}
+  if (verifyFallbackSnapshot(home, anchor, cache)) {
+    log('boot', 'profile fallback 健康（快照校验通过，跳过修复）');
+    return;
+  }
   let bootMod;
   try {
     bootMod = await import('@deepseek-ai/dsh-app-boot');
@@ -248,11 +405,13 @@ async function repairProfileFallback(home) {
     return;
   }
   if (typeof bootMod.healProfilesModuleFallback !== 'function') return;
-  const modulesRoot = path.join(home, 'profiles', 'node_modules');
   for (let attempt = 0; attempt < 24; attempt += 1) {
     try {
-      bootMod.healProfilesModuleFallback(dshPackageJson(), home);
+      bootMod.healProfilesModuleFallback(anchor, home);
       if (attempt > 0) log('boot', `profile fallback 已修复（重试 ${attempt} 次）`);
+      // 修复成功后记录健康快照，下次启动走快速校验。
+      const snap = snapshotFallbackLinks(modulesRoot);
+      if (snap) saveFallbackSnapshot(home, anchor, snap);
       return;
     } catch (err) {
       const message = String((err && err.message) || err);
@@ -533,32 +692,32 @@ function logTailSnippet(maxLines = 20) {
   return tail ? '\n\n最近日志：\n' + tail : '';
 }
 
-function parseFailedLoaderIds(text) {
-  const ids = new Set();
-  const re = /failed to apply loader entry\s+([A-Za-z0-9_-]+)\s*\(/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    if (m[1] !== 'include') ids.add(m[1]);
-  }
-  return [...ids];
+// loader 失败条目的三种 id 形态解析已收口到 profile-patch-heal.js
+// （parseFailedLoaderIds，含 issue #17 的 "duplicate loader entry id: X" 与
+// 括号包名形态），这里不再保留本地实现。
+
+function profilePatchText() {
+  const patchFile = path.join(dshHome || path.join(os.homedir(), '.dsh'), 'profiles', 'web', 'cordis.patch.yml');
+  try { return fs.readFileSync(patchFile, 'utf8'); } catch { return ''; }
 }
 
 function profilePatchIds() {
-  const patchFile = path.join(dshHome || path.join(os.homedir(), '.dsh'), 'profiles', 'web', 'cordis.patch.yml');
+  const text = profilePatchText();
   const ids = new Set();
-  try {
-    const text = fs.readFileSync(patchFile, 'utf8');
-    const re = /(?:^|\n)\s*-\s*id:\s*([A-Za-z0-9_-]+)/g;
-    let m;
-    while ((m = re.exec(text)) !== null) ids.add(m[1]);
-  } catch {}
+  const re = /(?:^|\n)\s*-\s*id:\s*([A-Za-z0-9_-]+)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) ids.add(m[1]);
   return [...ids];
 }
 
 function findFailedPatchPlugins() {
-  const failed = parseFailedLoaderIds(readDshWebLogTail(120));
+  const tokens = parseFailedLoaderIds(readDshWebLogTail(120));
   const known = new Set(profilePatchIds());
-  return failed.filter((id) => known.has(id));
+  // 括号包名（@scope/pkg）不是 patch id：先映射回条目 id 再参与 overlay 判定；
+  // 其余 token（hash 形态与 duplicate loader entry id: X 形态）按既有逻辑过滤。
+  const packages = tokens.filter((t) => t.includes('/'));
+  const mapped = mapPackagesToPatchIds(profilePatchText(), packages);
+  return [...new Set([...tokens.filter((t) => !t.includes('/')), ...mapped])].filter((id) => known.has(id));
 }
 
 function safeBootOverlayPath() {
@@ -1226,6 +1385,12 @@ function createWindow(opts = {}) {
     }
   });
 
+  // 主窗最小化且宠物启用「最小化自动弹出小窗」→ 自动打开宠物小窗
+  // （小窗为独立置顶窗口，主窗最小化/隐藏不影响其显示）。
+  mainWindow.on('minimize', () => {
+    if (petAutoOpen && (!petWindow || petWindow.isDestroyed())) createPetWindow();
+  });
+
   mainWindow.on('closed', () => {
     // 崩溃恢复会销毁并重建主窗：旧窗口的 closed 可能晚于新窗口创建，
     // 必须校验身份，避免把新的 mainWindow 全局引用置空。
@@ -1419,6 +1584,117 @@ function closeAllFloatWindows() {
   floatBySession.clear();
   if (sponsorWindow && !sponsorWindow.isDestroyed()) sponsorWindow.destroy();
   sponsorWindow = null;
+}
+
+// ---------------------------------------------------------------------------
+// 桌面宠物原生小窗
+// ---------------------------------------------------------------------------
+
+function petPositionFile() {
+  return path.join(userDataDir, 'pet-window.json');
+}
+
+// 读取持久化的小窗位置：跨屏校验（目标点所在显示器存在则用），并钳制在
+// 该显示器可视区内；读不到 / 不合法时返回 null（调用方落默认右下角）。
+function loadPetPosition() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(petPositionFile(), 'utf8'));
+    if (raw && Number.isFinite(raw.x) && Number.isFinite(raw.y)) {
+      const probe = { x: Math.round(raw.x), y: Math.round(raw.y), width: PET_WINDOW_W, height: PET_WINDOW_H };
+      const area = screen.getDisplayMatching(probe).workArea;
+      return {
+        x: Math.round(Math.min(Math.max(raw.x, area.x), area.x + area.width - PET_WINDOW_W)),
+        y: Math.round(Math.min(Math.max(raw.y, area.y), area.y + area.height - PET_WINDOW_H)),
+      };
+    }
+  } catch {}
+  return null;
+}
+
+function savePetPosition(x, y) {
+  try {
+    fs.writeFileSync(petPositionFile(), JSON.stringify({ x: Math.round(x), y: Math.round(y) }));
+  } catch (err) {
+    log('pet', '保存宠物小窗位置失败: ' + (err && err.message ? err.message : err));
+  }
+}
+
+function pushPetState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('pet:state', { open: !!(petWindow && !petWindow.isDestroyed()) }); } catch {}
+  }
+}
+
+function closePetWindow() {
+  if (petPosTimer !== null) { clearTimeout(petPosTimer); petPosTimer = null; }
+  if (petWindow && !petWindow.isDestroyed()) petWindow.destroy();
+  petWindow = null;
+}
+
+// 创建（或复用）宠物小窗：无边框、透明、置顶（screen-saver）、不进任务栏。
+// 与主窗共用默认分区（共享 localStorage：会话选中态与 harness-pet 设置），
+// preload 经 additionalArguments 的 --dsh-pet=1 进入小窗模式。
+function createPetWindow() {
+  if (petWindow && !petWindow.isDestroyed()) return petWindow;
+  if (!webUrl) return null;
+  const saved = loadPetPosition();
+  const area = screen.getPrimaryDisplay().workArea;
+  const pos = saved || {
+    x: area.x + area.width - PET_WINDOW_W - 24,
+    y: area.y + area.height - PET_WINDOW_H - 24,
+  };
+  const win = new BrowserWindow({
+    width: PET_WINDOW_W,
+    height: PET_WINDOW_H,
+    x: pos.x,
+    y: pos.y,
+    show: false,
+    title: 'DSH 宠物',
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    fullscreenable: false,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+      // 不设 partition：与主窗共享 localStorage（dsh.sessions.current 与
+      // harness-pet:settings），小窗才能实时跟随主窗会话/设置。
+      additionalArguments: ['--dsh-pet=1'],
+    },
+  });
+  petWindow = win;
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.loadURL(webUrl).catch((err) => log('pet', '小窗加载失败: ' + ((err && err.message) || err)));
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
+  // 位置防抖保存（400ms）。
+  win.on('move', () => {
+    if (petPosTimer !== null) clearTimeout(petPosTimer);
+    petPosTimer = setTimeout(() => {
+      petPosTimer = null;
+      if (petWindow === win && !win.isDestroyed()) {
+        const [x, y] = win.getPosition();
+        savePetPosition(x, y);
+      }
+    }, 400);
+  });
+  win.on('closed', () => {
+    if (petPosTimer !== null) { clearTimeout(petPosTimer); petPosTimer = null; }
+    if (petWindow === win) petWindow = null;
+    pushPetState();
+  });
+  guardWebContents(win.webContents);
+  if (recovery) recovery.attach(win, "float");
+  log('pet', '已创建宠物小窗 (' + PET_WINDOW_W + 'x' + PET_WINDOW_H + ')');
+  pushPetState();
+  return win;
 }
 
 // ---------------------------------------------------------------------------
@@ -1656,13 +1932,17 @@ async function runUpdateFlow(manual) {
       await updater.applyUpdate(ctx, latest);
       // 新 overlay 已就位：立即重打运行时补丁（全部幂等），否则「稍后重启」后再
       // 点「重启 dsh web 服务」会用未修复的新版本启动（识图发送、设置暴露等回归）。
+      // 同时把壳内置 Agent 预设补进新 overlay（干净 npm 包不含 8 个壳预设）。
+      syncLocalAgentPresets();
       applyRuntimeFlashFix();
       applyPromptExposeFix();
       applyImageSendFix();
       applyVisionKeyFix();
       applyProfilePatchGuard();
       applySettingsSectionGuard();
-  applyWorkspaceSearchRailFix();
+      applyWorkspaceSearchRailFix();
+      applyWebSearchBaseUrlFix();
+      applyMenuViewportFix();
     }
     const { response: r2 } = await showBox({
       type: 'info',
@@ -1932,6 +2212,58 @@ function registerChromeIpc() {
     for (const win of floatWindows) {
       if (!win.isDestroyed() && win.webContents === event.sender) { win.close(); break; }
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // 桌面宠物原生小窗（harness-pet 插件对接，双端契约见 docs/pet-desktop.md）
+  // -------------------------------------------------------------------------
+
+  // 主窗请求宠物小窗 open / toggle / state（校验发送者必须是主窗）。
+  ipcMain.handle('chrome:pet-window', (event, { action } = {}) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return { ok: false, error: 'unauthorized' };
+    if (action === 'state') {
+      return { ok: true, open: !!(petWindow && !petWindow.isDestroyed()) };
+    }
+    if (action === 'open' || action === 'toggle') {
+      if (petWindow && !petWindow.isDestroyed()) {
+        if (action === 'toggle') {
+          closePetWindow();
+          return { ok: true, open: false };
+        }
+        petWindow.show();
+        petWindow.focus();
+        return { ok: true, open: true, id: petWindow.id, reused: true };
+      }
+      const win = createPetWindow();
+      if (!win) return { ok: false, error: 'not-ready' };
+      return { ok: true, open: true, id: win.id };
+    }
+    return { ok: false, error: 'bad-action' };
+  });
+
+  // 小窗关闭自身（校验发送者是小窗）。
+  ipcMain.on('pet:close', (event) => {
+    if (petWindow && !petWindow.isDestroyed() && petWindow.webContents === event.sender) {
+      petWindow.close();
+    }
+  });
+
+  // 小窗搬窗：绝对目标位置（光标屏幕坐标 + 抓取偏移），钳制在当前显示器
+  // 可视区（至少露出 80px，防止拖出视口找不回来）+ 取整（校验发送者是小窗）。
+  ipcMain.on('pet:move-to', (event, { x, y } = {}) => {
+    if (!petWindow || petWindow.isDestroyed() || petWindow.webContents !== event.sender) return;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const probe = { x: Math.round(x), y: Math.round(y), width: PET_WINDOW_W, height: PET_WINDOW_H };
+    const area = screen.getDisplayMatching(probe).workArea;
+    const nx = Math.min(Math.max(x, area.x - PET_WINDOW_W + 80), area.x + area.width - 80);
+    const ny = Math.min(Math.max(y, area.y - PET_WINDOW_H + 80), area.y + area.height - 80);
+    petWindow.setPosition(Math.round(nx), Math.round(ny));
+  });
+
+  // 主窗插件上报「最小化自动弹出小窗」开关（校验发送者必须是主窗）。
+  ipcMain.on('pet:set-auto-open', (event, { enabled } = {}) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return;
+    petAutoOpen = enabled === true;
   });
 
   // 复制文本到剪贴板（菜单「更新源」复制按钮 / 关于对话框）。
@@ -2224,6 +2556,10 @@ const COMPANION_PLUGINS = [
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
   { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
+  // 对话节点导航条（vlln/dsh-navbar，MIT）：对话区右缘节点串快速跳转
+  // user 消息（悬停预览/点击跳转/滚轮切换），取代 conversation-tweaks
+  // 内置的会话滑轨。
+  { id: 'dsh-navbar', name: '@vlln/dsh-navbar' },
   { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
   { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
   { id: 'prompt-custom', name: '@deepseek-ai/dsh-prompt-custom' },
@@ -2326,12 +2662,16 @@ function removeRetiredHarnessPet(profileDir) {
 }
 
 // ---------------------------------------------------------------------------
-// profile patch 自愈：cordis.patch.yml 损坏（典型：顶层 `[]` 与 `- insert:` 列表
-// 混存——同一 YAML 文档两个顶层值）会让 dsh web 装配 profile 时抛 YAMLException
-// 并以 exit 1 退出，桌面端「启动失败」。每次启动 dsh web 前调用本函数：
+// profile patch 自愈：cordis.patch.yml 损坏会让 dsh web 装配 profile 时抛错并
+// 以 exit 1 退出，桌面端「启动失败」。每次启动 dsh web 前调用本函数：
 //   1. 顶层孤立 `[]` 与列表条目混存 → 移除 `[]` 行（修复为单一顶层列表）；
-//   2. 仍无法解析（其它损坏形态）→ 备份为 cordis.patch.yml.broken-<ts> 并重置为
-//      最小合法文件，日志告警，备份保留用户内容供恢复。健康文件零写入（幂等）。
+//   2. issue #17 存量：同一 loader id 被注册多次（旧版本插件安装写入的重复
+//      insert 条目 → cordis loader "duplicate loader entry id: X"）→ 注册行级
+//      去重，保留首次注册、备份原文件；config 覆盖/disabled 禁用条目是用户
+//      配置，绝不改动（PR #24 v2）；
+//   3. 仍无法解析（其它损坏形态）→ 备份为 cordis.patch.yml.broken-<ts> 并
+//      重置为最小合法文件，日志告警，备份保留用户内容供恢复。
+//   健康文件零写入（幂等）。
 // ---------------------------------------------------------------------------
 function profilePatchFile() {
   const home = effectiveDshHome() || path.join(os.homedir(), '.dsh');
@@ -2384,6 +2724,20 @@ function healProfilePatch() {
     let parsed;
     let error = null;
     try { parsed = yaml.load(text); } catch (err) { error = err; }
+    if (!error && Array.isArray(parsed)) {
+      // issue #17 存量自愈：注册行级去重（PR #24 v2）。重复注册（旧版本
+      // 插件安装写入的第二个同 id insert 条目）会让 cordis loader 抛
+      // "duplicate loader entry id: X"，且该状态永远无法自愈；只删重复
+      // 注册行，用户手写的 config/disabled 覆盖条目原样保留。
+      const dedupe = dedupePatchEntries(text);
+      if (dedupe.removed.length > 0) {
+        const backup = file + '.dup-' + Date.now();
+        try { fs.copyFileSync(file, backup); } catch {}
+        writePatchAtomic(file, dedupe.text);
+        log('boot', 'profile patch 自愈: 移除了重复注册的 loader 条目 ' + [...new Set(dedupe.removed)].join(', ') + '，原文件已备份到 ' + backup);
+        text = dedupe.text;
+      }
+    }
     if (error || !Array.isArray(parsed)) {
       const backup = file + '.broken-' + Date.now();
       try { fs.renameSync(file, backup); } catch { fs.copyFileSync(file, backup); }
@@ -2394,6 +2748,60 @@ function healProfilePatch() {
     log('boot', 'profile patch 自愈失败: ' + err.message);
   }
 }
+/**
+ * 在「实际将运行的 dsh 包」（内置或用户目录 overlay）中解析核心 bundles，
+ * 只返回真实可解析的模板名；解析不到的名字绝不写入，避免与真正启动的
+ * dsh 版本漂移后写入无效 bundle 名。
+ */
+function resolvableCoreBundles() {
+  const installAnchor = path.dirname(dshPackageJson());
+  return CORE_BUNDLE_NAMES.filter((name) => {
+    try {
+      require.resolve(name + '/package.json', { paths: [installAnchor] });
+      return true;
+    } catch {
+      return false; // 该 dsh 安装中缺失，交由 dsh 初始化
+    }
+  });
+}
+
+// 递归比对 src/dest 的 size+mtime，任一文件缺失或不一致返回 true（需要同步）。
+// dest 目录整体不存在时直接返回 true，避免逐文件 stat 异常。
+function dirNeedsSync(src, dest) {
+  if (!fs.existsSync(dest)) return true;
+  let entries;
+  try { entries = fs.readdirSync(src, { withFileTypes: true }); } catch { return true; }
+  for (const e of entries) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    if (e.isDirectory()) {
+      if (dirNeedsSync(s, d)) return true;
+    } else {
+      try {
+        const ss = fs.statSync(s);
+        const ds = fs.statSync(d);
+        if (ds.size !== ss.size || Math.round(ds.mtimeMs) !== Math.round(ss.mtimeMs)) return true;
+      } catch {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// 目录级同步：内容一致时跳过，避免每次启动全量递归复制
+// （临时目录 + 杀软实时扫描下重复写盘最费时）。cpSync 必须保留时间戳，
+// 否则复制后的 mtime 每次都是"现在"，跳过比对永远不成立。
+function syncDir(src, dest) {
+  if (!fs.existsSync(src)) return;
+  try {
+    if (fs.existsSync(dest) && !dirNeedsSync(src, dest)) return;
+    fs.cpSync(src, dest, { recursive: true, force: true, preserveTimestamps: true });
+  } catch (err) {
+    log('boot', '同步目录失败 ' + src + ': ' + err.message);
+  }
+}
+
 function syncCompanionPlugins() {
   if (!IS_WIN) return;
   try {
@@ -2408,10 +2816,21 @@ function syncCompanionPlugins() {
     removeLegacyMarketplace(path.join(profileDir, 'node_modules'), profileDir);
     removeRetiredHarnessPet(profileDir);
 
+    // 源缺失的配套插件（用户从 assets 删除 / 开发中裁剪 / 安装包损坏）：
+    // 既不能复制、也无法从源码确认 bundle 身份。处理原则（issue #34 诊断
+    // 的自愈死循环）：缺失源一律不写 patch 注册（否则「注册了但包不存在」
+    // 会让 dsh web 启动崩溃）；若 manifest 仍登记为 bundle，则视为用户
+    // 意图禁用，从 bundles 移除。
+    const missingSourceNames = new Set();
+    for (const p of COMPANION_PLUGINS) {
+      const sdir = path.join(__dirname, 'assets', 'plugins', companionDirName(p));
+      if (!fs.existsSync(path.join(sdir, 'package.json'))) missingSourceNames.add(p.name);
+    }
+
     const bundleNames = new Set();
     const copyFiles = [
       'package.json', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md',
-      'lib/index.js', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
+      'lib/index.js', 'lib/index.mjs', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
       'dsh.plugin.json',
     ];
     // 配套插件引用了不在 dsh 核心依赖闭包里的 npm 包时（例如 dsh-better-sidebar
@@ -2421,11 +2840,7 @@ function syncCompanionPlugins() {
     for (const name of vendorDeps) {
       const sdir = path.join(__dirname, 'node_modules', name);
       if (!fs.existsSync(sdir)) continue;
-      try {
-        fs.cpSync(sdir, path.join(profileDir, 'node_modules', name), { recursive: true, force: true });
-      } catch (err) {
-        log('boot', '同步内置依赖 ' + name + ' 失败: ' + err.message);
-      }
+      syncDir(sdir, path.join(profileDir, 'node_modules', name));
     }
     for (const p of COMPANION_PLUGINS) {
       const rel = companionDirName(p);
@@ -2441,16 +2856,28 @@ function syncCompanionPlugins() {
       fs.mkdirSync(path.join(dest, 'lib'), { recursive: true });
       for (const f of copyFiles) {
         const sf = path.join(src, f);
-        if (fs.existsSync(sf)) fs.copyFileSync(sf, path.join(dest, f));
+        if (!fs.existsSync(sf)) continue;
+        const df = path.join(dest, f);
+        // 逐文件比对大小+mtime，一致则跳过复制，避免每次启动都写盘
+        // （临时目录 + 杀软实时扫描下重复写入最费时）。注意 fs.copyFileSync
+        // 不保留时间戳（复制的目标 mtime=现在），会让比对永远不成立；这里
+        // 用 cpSync + preserveTimestamps 写，保证第二次启动能命中跳过。
+        try {
+          const sst = fs.statSync(sf);
+          const dst = fs.statSync(df);
+          if (dst.size === sst.size && Math.round(dst.mtimeMs) === Math.round(sst.mtimeMs)) continue;
+        } catch { /* 目标缺失或不可读 → 照常复制 */ }
+        try {
+          fs.cpSync(sf, df, { force: true, preserveTimestamps: true });
+        } catch (err) {
+          log('boot', '同步配套插件文件失败 ' + sf + ': ' + err.message);
+        }
       }
       // 完整同步插件自带的 lib/assets/src 目录：第三方插件（如
       // dsh-better-sidebar 的懒加载 chunk）不都落在固定文件清单里，
       // 递归复制保证打包产物与资源随插件一起进 profile。
       for (const sub of ['lib', 'assets', 'src']) {
-        const sdir = path.join(src, sub);
-        if (fs.existsSync(sdir)) {
-          fs.cpSync(sdir, path.join(dest, sub), { recursive: true, force: true });
-        }
+        syncDir(path.join(src, sub), path.join(dest, sub));
       }
       // Bundle 插件不写 patch 行：dsh 在启动时读取 profile 的
       // dsh.profile.bundles 并应用包内 cordis.patch.yml。
@@ -2503,21 +2930,26 @@ function syncCompanionPlugins() {
     // manifest，交由 dsh 自行初始化，bundle 插件留待下一次启动注册。
     let bundlesUsable = Array.isArray(manifest.dsh.profile.bundles);
     if (!bundlesUsable) {
-      const coreBundles = [];
-      // 以「实际将运行的 dsh 包」（内置或用户目录 overlay）为解析锚点，
-      // 确保写入的模板与真正启动的 dsh 版本一致；解析不到则不写。
-      const installAnchor = path.dirname(dshPackageJson());
-      for (const name of ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']) {
-        try {
-          require.resolve(name + '/package.json', { paths: [installAnchor] });
-          coreBundles.push(name);
-        } catch { /* 该 dsh 安装中缺失，交由 dsh 初始化 */ }
-      }
-      if (coreBundles.length === 2) {
+      const coreBundles = resolvableCoreBundles();
+      if (coreBundles.length === CORE_BUNDLE_NAMES.length) {
         manifest.dsh.profile.bundles = coreBundles;
         bundlesUsable = true;
       } else {
         log('boot', 'dsh 出厂核心 bundles 未在安装中解析到，跳过 manifest 预写，交由 dsh 初始化');
+      }
+    } else {
+      // issue #16 存量自愈：旧版本（0.3.3/0.3.4，#13 的 bug 场景）写坏的
+      // manifest 里 bundles 只有配套 bundle、缺少核心 bundles。dsh 启动时
+      // 核心服务（webServer/subprocess/settings/llm 等）无人提供，插件树
+      // 无法激活（N entries did not activate），且该状态永远无法自愈。
+      // 这里把缺失且可解析的核心 bundles 补到列表最前（保持与模板一致的
+      // 先后顺序），其余条目（含用户自行添加的）原样保留；健康 manifest
+      // 零写入（幂等）。写入用原子写，避免与 dsh 的观察者撕裂读。
+      const healed = ensureCoreBundles(manifest.dsh.profile.bundles, resolvableCoreBundles());
+      if (healed) {
+        manifest.dsh.profile.bundles = healed.next;
+        writePatchAtomic(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+        log('boot', 'profile manifest 自愈: 旧版本写坏的 bundles 缺少核心 ' + healed.added.join(', ') + '，已补齐到最前');
       }
     }
     for (const name of bundleNames) {
@@ -2528,15 +2960,60 @@ function syncCompanionPlugins() {
         log('boot', '已把 bundle 插件加入 web profile bundles: ' + name);
       }
     }
+    // 存量 bundle 源缺失 → 视为用户禁用：从 bundles 移除（幂等），否则 dsh
+    // 启动仍会因 manifest 登记了不存在的包而失败。只动配套插件名，用户自行
+    // 添加的第三方 bundle 与核心 bundles 不受影响。
+    if (missingSourceNames.size > 0 && Array.isArray(manifest.dsh.profile.bundles)) {
+      const before = manifest.dsh.profile.bundles.length;
+      manifest.dsh.profile.bundles = manifest.dsh.profile.bundles.filter((n) => !missingSourceNames.has(n));
+      if (manifest.dsh.profile.bundles.length !== before) {
+        writePatchAtomic(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+        log('boot', '配套 bundle 源缺失，已从 web profile bundles 移除（视为禁用）: ' + [...missingSourceNames].join(', '));
+      }
+    }
 
     // 非 bundle 插件与内置皮肤统一注册到 profile 的 patch 层（幂等）。
     const patchFile = path.join(profileDir, 'cordis.patch.yml');
     let patch = '';
     try { patch = fs.readFileSync(patchFile, 'utf8'); } catch { patch = ''; }
     let changed = false;
+    // bundle 迁移自愈（issue #17 同族）：旧版本把后来升级为 bundle 的配套插件
+    // 当非 bundle 写进了 patch（insert 行）；插件现经 dsh.profile.bundles 装配，
+    // 残留注册行会造成同 id 双登记 → cordis loader "duplicate loader entry id" →
+    // 整树加载失败（更新后首次启动崩溃）。幂等移除命中的注册行/块；用户手写
+    // 的 config 覆盖/disabled 禁用条目原样保留（PR #24 v2）。
+    const bundleIds = new Set();
+    for (const p of COMPANION_PLUGINS) {
+      if (bundleNames.has(p.name)) bundleIds.add(p.id);
+    }
+    if (bundleIds.size > 0 && patch.includes('- id:')) {
+      const migration = dropBlocksByIds(patch, [...bundleIds]);
+      if (migration.removed.length > 0) {
+        patch = migration.text;
+        changed = true;
+        log('boot', '已把 bundle 插件移出 profile patch（避免双登记）: ' + [...new Set(migration.removed)].join(', '));
+      }
+    }
+    // 源缺失插件的旧注册残留同样移除：不清理的话 loader 仍会尝试加载
+    // 不存在的包（issue #34 诊断的「Cannot find package」崩溃）；用户手写
+    // 的 config/disabled 覆盖条目由 dropBlocksByIds 语义原样保留。
+    if (missingSourceNames.size > 0 && patch.includes('- id:')) {
+      const missingIds = COMPANION_PLUGINS.filter((p) => missingSourceNames.has(p.name)).map((p) => p.id);
+      if (missingIds.length > 0) {
+        const drop = dropBlocksByIds(patch, missingIds);
+        if (drop.removed.length > 0) {
+          patch = drop.text;
+          changed = true;
+          log('boot', '已把源缺失插件移出 profile patch（避免注册不存在的包）: ' + [...new Set(drop.removed)].join(', '));
+        }
+      }
+    }
+    // 非 bundle 插件与内置皮肤统一注册（皮肤默认 disabled，由 dsh-skin-switch
+    // 互斥激活）。
     const patchRows = [];
     for (const p of COMPANION_PLUGINS) {
       if (bundleNames.has(p.name)) continue;
+      if (missingSourceNames.has(p.name)) continue;
       patchRows.push({ id: p.id, name: p.name, disabled: false, rename: true });
     }
     for (const skin of skinRows) patchRows.push({ id: skin.id, name: skin.name, disabled: true, rename: false });
@@ -2544,7 +3021,7 @@ function syncCompanionPlugins() {
       if (p.rename) {
         // 该 id 在 patch 里已存在：若它现在的 name 与当前版本不一致（例如历史
         // 包改名），就地改名为当前值。只改 name 行，不动用户自己加的其它行。
-        const idNameRe = new RegExp('(id:\s*' + p.id + '\b[^\n]*\n\s*name:\s*\x27)([^\x27]*)(\x27)');
+        const idNameRe = new RegExp('(id:\\s*' + p.id + '\\b[^\\n]*\\n\\s*name:\\s*\\x27)([^\\x27]*)(\\x27)');
         const m = patch.match(idNameRe);
         if (m) {
           if (m[2] !== p.name) {
@@ -2556,7 +3033,7 @@ function syncCompanionPlugins() {
       }
       // 尊重用户已有配置：id 只要出现过（例如用户手写的 disabled 条目）就不再
       // 自动插入，避免「禁用后下次启动又被加回来」或同 id 重复条目导致 loader 报错。
-      if (new RegExp('(?:^|\n)\s*-?\s*id\s*:\s*' + p.id + '\b').test('\n' + patch)) {
+      if (new RegExp('(?:^|\\n)\\s*-?\\s*id\\s*:\\s*' + p.id + '\\b').test('\n' + patch)) {
         continue;
       }
       const block = `- insert:\n    - id: ${p.id}\n      name: '${p.name}'\n${p.disabled ? '      disabled: true\n' : ''}`;
@@ -2565,6 +3042,7 @@ function syncCompanionPlugins() {
       else patch = patch.replace(/\s*$/, '\n') + block;
       changed = true;
     }
+
     if (changed) {
       fs.writeFileSync(patchFile, patch);
       log('boot', '已同步配套插件/皮肤到 web profile: ' + patchRows.map((p) => p.id).join(', '));
@@ -2595,6 +3073,32 @@ function syncBuiltinAgentPresets() {
     log('boot', '已同步 ' + dests.length + ' 个内置 Agent 预设到 WSL dsh: ' + dests.map((d) => path.basename(d)).join(', '));
   } catch (err) {
     log('boot', '同步内置 Agent 预设到 WSL 失败: ' + err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 本地模式内置 Agent 预设同步（WSL 同族问题的 local 半边）：after-pack /
+// npm start 只把 assets/agent-presets 写进「内置」dsh 包；用户把 agent 更新到
+// overlay（userData/agent）后，overlay 是干净的 npm 包（updater.applyUpdate
+// 全新安装），3 个壳内置预设会消失（模式列表比内置/WSL 少）。这里幂等地把
+// 预设补进「当前生效」的 dsh 包：overlay 存在则 overlay，否则内置包（幂等，
+// 写入失败只告警不中断）。与 syncBuiltinAgentPresets 一起保证三种布局
+// （内置 / 更新 overlay / WSL）模式列表一致。
+// ---------------------------------------------------------------------------
+function syncLocalAgentPresets() {
+  if (isWslMode()) return; // WSL 走 UNC 的 syncBuiltinAgentPresets
+  try {
+    const active = updater.overlayVersion(updCtx())
+      ? path.join(userDataDir, 'agent', 'node_modules', '@deepseek-ai', 'dsh')
+      : path.join(__dirname, 'node_modules', '@deepseek-ai', 'dsh');
+    if (!fs.existsSync(path.join(active, 'package.json'))) {
+      log('boot', '未找到生效的 dsh 包，跳过内置 Agent 预设同步');
+      return;
+    }
+    const dests = installBuiltinPresets(active);
+    log('boot', '已同步 ' + dests.length + ' 个内置 Agent 预设到 ' + (updater.overlayVersion(updCtx()) ? 'agent overlay' : '内置 dsh 包') + ': ' + dests.map((d) => path.basename(d)).join(', '));
+  } catch (err) {
+    log('boot', '同步内置 Agent 预设失败: ' + err.message);
   }
 }
 
@@ -3010,6 +3514,55 @@ function applyWorkspaceSearchRailFix() {
       log('boot', 'workspace 搜索栏修复: 已注入到 ' + file);
     } catch (err) {
       log('boot', 'workspace 搜索栏修复失败(' + file + '): ' + err.message);
+    }
+  }
+}
+// ---------------------------------------------------------------------------
+// issue #20 运行时补丁：dsh-web-search-deepseek 的「接口地址」契约与拼接修复。
+// 补丁本体在 scripts/patch-web-search-baseurl.js（与打包补丁共用同一实现，
+// 避免两处漂移）；这里覆盖三处运行副本：profile fallback（junction 写穿）、
+// 内置 app 副本、用户更新过的 agent overlay。锚点不匹配（上游将来修复后）
+// 自动跳过，绝不损坏文件。
+// ---------------------------------------------------------------------------
+function applyWebSearchBaseUrlFix() {
+  const home = effectiveDshHome() || path.join(os.homedir(), '.dsh');
+  const targets = [
+    path.join(home, 'profiles', 'node_modules'),
+    path.join(__dirname, 'node_modules'),
+    path.join(userDataDir, 'agent', 'node_modules'),
+  ];
+  for (const root of targets) {
+    if (!root || !fs.existsSync(root)) continue;
+    try {
+      const n = patchWebSearchBaseUrl(root, (m) => log('boot', m));
+      if (n > 0) log('boot', 'web-search baseURL 补丁: 已应用到 ' + root);
+    } catch (err) {
+      log('boot', 'web-search baseURL 补丁失败(' + root + '): ' + err.message);
+    }
+  }
+}
+// ---------------------------------------------------------------------------
+// issue #36 运行时补丁：dsh-client-ui-primitives 的 Menu portal 弹层在条目很多
+// （内置 8 个 Agent 预设 + npm 自带 + 用户安装叠加）时没有高度上限，place()
+// 会把超出视口的弹层推到屏幕上方，顶部条目被裁掉且无法触达（「预设多了
+// 上面的会不显示」）。补丁本体在 scripts/patch-menu-viewport.js（与打包补丁
+// 共用同一实现）；覆盖三处运行副本：profile fallback、内置 app 副本、用户
+// 更新过的 agent overlay。锚点不匹配（上游将来修复后）自动跳过，绝不损坏。
+// ---------------------------------------------------------------------------
+function applyMenuViewportFix() {
+  const home = effectiveDshHome() || path.join(os.homedir(), '.dsh');
+  const targets = [
+    path.join(home, 'profiles', 'node_modules'),
+    path.join(__dirname, 'node_modules'),
+    path.join(userDataDir, 'agent', 'node_modules'),
+  ];
+  for (const root of targets) {
+    if (!root || !fs.existsSync(root)) continue;
+    try {
+      const n = patchMenuViewport(root, (m) => log('boot', m));
+      if (n > 0) log('boot', 'menu 视口补丁: 已应用到 ' + root);
+    } catch (err) {
+      log('boot', 'menu 视口补丁失败(' + root + '): ' + err.message);
     }
   }
 }
@@ -3581,6 +4134,14 @@ async function boot() {
 
   // 移除原生菜单栏（文件/视图/帮助），全部功能由自绘 chrome 与托盘提供。
   Menu.setApplicationMenu(null);
+  // 尽早弹出 loading 窗口（不依赖后续任何启动步骤），用户能第一时间看到
+  // 「正在启动」反馈；同时立刻装配渲染进程自恢复与挂起心跳——loading 窗口
+  // 阶段（首次同步/补丁可能耗时数十秒）崩溃/挂起也有兜底，而不是裸奔。
+  // （PR #39 提速 + 本合入补齐恢复装配时机）
+  createWindow();
+  initRendererRecovery();
+  wireWindowRecovery();
+  startHeartbeatLoop();
   startPreviewStaticServer();
   registerChromeIpc();
   createTray();
@@ -3593,10 +4154,6 @@ async function boot() {
     // 确保 WSL 内 agent 安装完成后再同步配套插件/补丁（经 UNC 写入 WSL profile）。
     // 跳过 repairProfileFallback（WSL 内的 dsh 首次启动会自行 heal）与 koffi
     // 目录选择器 overlay（只作用于本地内置 dsh）。
-    initRendererRecovery();
-    createWindow();
-    wireWindowRecovery();
-    startHeartbeatLoop();
     setupTestChannel();
     await wslBackend.ensureInstalled();
     syncCompanionPlugins();
@@ -3607,26 +4164,28 @@ async function boot() {
     applyVisionKeyFix();
     applyProfilePatchGuard();
     applySettingsSectionGuard();
-  applyWorkspaceSearchRailFix();
+    applyWorkspaceSearchRailFix();
+    applyWebSearchBaseUrlFix();
+    applyMenuViewportFix();
   } else {
     // 先修复 profile fallback 联接再同步/补丁依赖文件：EPERM 环境下补丁写不进去。
     await repairProfileFallback(home);
     syncCompanionPlugins();
+    syncLocalAgentPresets();
     applyRuntimeFlashFix();
     applyPromptExposeFix();
     applyImageSendFix();
     applyVisionKeyFix();
     applyProfilePatchGuard();
     applySettingsSectionGuard();
-  applyWorkspaceSearchRailFix();
-    initRendererRecovery();
-    createWindow();
-    wireWindowRecovery();
-    startHeartbeatLoop();
+    applyWorkspaceSearchRailFix();
+    applyWebSearchBaseUrlFix();
+    applyMenuViewportFix();
     setupTestChannel();
     if (runKoffiPreflight()) clearAutoPickerBrowseOverlay();
     else enablePickerBrowseOverlay();
   }
+  bootFinished = true; // 窗口已建：此后异常走既有 fatal/错误弹窗，不再重复弹
   startAndShow()
     .then(() => {
       // Session-completion notifications: watch dsh session logs under the
@@ -3664,20 +4223,54 @@ async function boot() {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
+// 便携版数据目录必须在校验单实例锁之前重定向：Electron 的实例锁以 userData
+// 为键，旧代码在 boot() 里才 setPath —— 便携版与安装版（乃至两个便携版）会
+// 共用 %APPDATA%\DSH Desktop 的锁；安装版正在运行时再双击便携版会因
+// requestSingleInstanceLock() 失败而静默退出、无任何界面（issue #30「便携版
+// 双击无反应 / 有进程无窗口」的候选根因）。重定向后各安装形态各持其锁，
+// 便携版数据随 exe 走（data/），两版可同时运行互不干扰。
+if (process.env.PORTABLE_EXECUTABLE_DIR) {
+  try { app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data')); } catch {}
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
   app.setAppUserModelId('com.deepseek.dsh.desktop');
+  // 本区块在模块加载期执行（boot() 之前），userDataDir 尚未赋值；统一用
+  // app.getPath('userData')（便携版已在上面重定向）构造 settings 上下文，
+  // 避免读写到 cwd 下无关的 settings.json。
+  const gpuSettingsCtx = () => ({ ...updCtx(), userDataDir: app.getPath('userData') });
   // GPU 进程崩溃是最常见的 Electron 静默退出原因（无日志、无弹窗）。
-  // 禁用硬件加速可规避大多数显卡驱动兼容性问题，对 DSH 这种文本为主
-  // 的应用无明显性能影响。若需排查，注释掉此行并观察崩溃日志。
-  app.disableHardwareAcceleration();
-  // GPU / 渲染进程崩溃日志：即使无法恢复，至少留下痕迹供排查。
-  app.on('gpu-process-crashed', (_e, killed) => {
+  // 默认启用硬件加速（issue #26：软件渲染导致 GPU 进程空转 ~60% 单核、
+  // 设置页等整页重绘明显掉帧）。仅当 settings.json 标记
+  // hardwareAcceleration === 'off'（用户手动关闭，或 GPU 连续崩溃自动降级
+  // 写入）时才禁用硬件加速。
+  if (updater.loadSettings(gpuSettingsCtx()).hardwareAcceleration === 'off') {
+    app.disableHardwareAcceleration();
+  }
+  // GPU / 渲染进程崩溃日志 + 自动降级（issue #26）：GPU 进程短时间内连续
+  // 崩溃达到阈值 → 判定显卡驱动不兼容 → 持久化 hardwareAcceleration:'off'
+  // 并重启应用，而不是旧版那样一刀切全局禁用硬件加速。
+  const gpuCrashGuard = createGpuCrashGuard();
+  const recordGpuCrash = (extra) => {
     const ts = new Date().toISOString();
-    try { const lp = path.join(app.getPath('userData'), 'logs', 'desktop.log'); fs.mkdirSync(path.dirname(lp), { recursive: true }); fs.appendFileSync(lp, `[${ts}] [crash] GPU 进程崩溃 (killed=${killed})\n`); } catch {}
-  });
+    try { const lp = path.join(app.getPath('userData'), 'logs', 'desktop.log'); fs.mkdirSync(path.dirname(lp), { recursive: true }); fs.appendFileSync(lp, `[${ts}] [crash] GPU 进程崩溃 ${extra}\n`); } catch {}
+    if (!gpuCrashGuard.record()) return;
+    try {
+      const s = updater.loadSettings(gpuSettingsCtx());
+      s.hardwareAcceleration = 'off';
+      updater.saveSettings(gpuSettingsCtx(), s);
+      log('boot', 'GPU 进程连续崩溃，已持久化关闭硬件加速，重启应用生效');
+    } catch (err) {
+      log('boot', 'GPU 降级标记写入失败: ' + ((err && err.message) || err));
+    }
+    try { quitting = true; markCleanExit(); killTreeSync(serverProc); } catch {}
+    app.relaunch();
+    app.exit(0);
+  };
+  app.on('gpu-process-crashed', (_e, killed) => recordGpuCrash(`(killed=${killed})`));
   app.on('render-process-gone', (_e, wc, details) => {
     const ts = new Date().toISOString();
     try { const lp = path.join(app.getPath('userData'), 'logs', 'desktop.log'); fs.mkdirSync(path.dirname(lp), { recursive: true }); fs.appendFileSync(lp, `[${ts}] [crash] 渲染进程崩溃: ${details.reason} (exitCode=${details.exitCode})\n`); } catch {}
@@ -3685,6 +4278,7 @@ if (!gotLock) {
   app.on('child-process-gone', (_e, details) => {
     const ts = new Date().toISOString();
     try { const lp = path.join(app.getPath('userData'), 'logs', 'desktop.log'); fs.mkdirSync(path.dirname(lp), { recursive: true }); fs.appendFileSync(lp, `[${ts}] [crash] 子进程崩溃: type=${details.type} reason=${details.reason} (exitCode=${details.exitCode})\n`); } catch {}
+    if (details.type === 'GPU') recordGpuCrash('(via child-process-gone)');
   });
   app.on('second-instance', () => {
     if (mainWindow) {
@@ -3698,6 +4292,7 @@ if (!gotLock) {
     forceQuit = true;
     markCleanExit();
     log('boot', '正在退出，销毁会话浮窗并停止 dsh web 进程树…');
+    closePetWindow(); // 宠物小窗随应用退出关闭（主窗「关闭到托盘」时保留）
     closeAllFloatWindows();
     killTreeSync(serverProc);
     updater.abort();

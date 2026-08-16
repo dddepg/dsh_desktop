@@ -145,6 +145,32 @@ dsh-desktop/
 └── dist/                 # 构建产物（不入库）
 ```
 
+## 第三方开源组件
+
+本项目使用、引用或分发了若干第三方开源组件。完整清单（含许可证与来源，共 772 个组件）见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+
+其中随安装包分发的第三方社区 dsh 插件：
+
+| 插件 | 许可证 | 来源 |
+|---|---|---|
+| `dsh-better-sidebar` | MIT | [omdsh-dev/DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) |
+| `@dsh-external/dsh-super-injector` | BSD-3-Clause | @dsh-external 社区 |
+| `@dsh-external/dsh-vision` | BSD-3-Clause | @dsh-external 社区 |
+| `dsh-navbar` | MIT | [vlln/dsh-navbar](https://github.com/vlln/dsh-navbar) |
+| `harness-pet` | MIT | [cakeni/harness-pet](https://github.com/cakeni/harness-pet) |
+| `zat-dsh-engine` | MIT | [mishibeikejie/zat-dsh-engine](https://github.com/mishibeikejie/zat-dsh-engine) |
+
+随安装包分发的第三方社区 Agent 预设（`dsh-desktop/assets/agent-presets/`）：
+
+| 预设 | 许可证 | 来源 |
+|---|---|---|
+| `router-standard` | MIT | [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite) |
+| `anchored-standard` / `zero-anchored-standard` | MIT | [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) |
+| `v4-flash-godmode-opencode-go` | MIT | [SheberDavid/v4-flash-godmode-opencode-go](https://github.com/SheberDavid/v4-flash-godmode-opencode-go) |
+| `warmupbetter` / `warmupbetter-replay` | MIT | [0liveiraaa/myDshPresets](https://github.com/0liveiraaa/myDshPresets) |
+
+底层运行时依赖（Electron、zod、ws、schemastery、koffi、zstddec 等）与全部间接依赖的许可证声明，均在上述清单文件中。
+
 ## License
 
 MIT。基于 [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)（MIT）。

@@ -395,6 +395,198 @@ SCENARIOS['preview-fence'] = async (t) => {
   t.assert(q.exit.code === 0 && q.cleanExit === true, '干净退出');
 };
 
+// 识图 apiKey 保存回归场景（issue #33/#32）与既有修复场景并存。
+SCENARIOS['heal-stale-manifest'] = async (t) => {
+  // issue #16：旧版本（0.3.3/0.3.4，#13 场景）写坏的存量 manifest ——
+  // bundles 只有配套 bundle、缺少核心 bundles —— 必须在本轮启动中自愈，
+  // 否则 dsh web 每次都以「plugin tree failed to load」退出码 1 失败。
+  const profileDir = path.join(t.dshHome, 'profiles', 'web');
+  fs.mkdirSync(profileDir, { recursive: true });
+  const badManifest = {
+    name: 'dsh-profile-web',
+    private: true,
+    dsh: { profile: { bundles: ['@dsh-external/dsh-super-injector', 'zat-dsh-engine'] } },
+  };
+  fs.writeFileSync(path.join(profileDir, 'package.json'), JSON.stringify(badManifest, null, 2) + '\n');
+  await t.waitFor('boot-ready', 240000, '坏 manifest 应被自愈后正常启动');
+  await t.waitFor('界面已稳定', 60000, '稳定期完成');
+  t.assert(t.grepLog('profile manifest 自愈'), '应记录 manifest 自愈日志');
+  const manifest = JSON.parse(fs.readFileSync(path.join(profileDir, 'package.json'), 'utf8'));
+  const bundles = manifest && manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles;
+  t.assert(Array.isArray(bundles), 'manifest bundles 应为数组');
+  t.assert(bundles[0] === '@deepseek-ai/dsh-base' && bundles[1] === '@deepseek-ai/dsh-web-app',
+    `核心 bundles 应补齐到最前，实际=${JSON.stringify(bundles)}`);
+  t.assert(bundles.includes('@dsh-external/dsh-super-injector') && bundles.includes('zat-dsh-engine'),
+    '既有配套 bundle 应原样保留');
+  const q = await t.quitAndCheck();
+  t.assert(q.exit.code === 0 && q.cleanExit === true, '干净退出');
+};
+
+SCENARIOS['heal-dup-patch'] = async (t) => {
+  // issue #17：旧版本插件安装写入的「同 id 重复注册」存量（cordis.patch.yml
+  // 含两个 id: balance 的 insert 块）会让 cordis loader 抛
+  // "duplicate loader entry id: X" 且永远无法启动。本场景验证启动自愈：
+  // 去重为单一条目、原文件备份、正常进入 Web UI。
+  const profileDir = path.join(t.dshHome, 'profiles', 'web');
+  fs.mkdirSync(profileDir, { recursive: true });
+  const dupPatch = [
+    '# 模拟 v0.3.4 存量：两个 insert 块重复注册 id: balance',
+    '- insert:',
+    '    - id: balance',
+    "      name: '@deepseek-ai/dsh-balance'",
+    '- insert:',
+    '    - id: balance',
+    "      name: '@deepseek-ai/dsh-balance'",
+    '',
+  ].join('\n');
+  const patchFile = path.join(profileDir, 'cordis.patch.yml');
+  fs.writeFileSync(patchFile, dupPatch);
+  await t.waitFor('boot-ready', 240000, '重复注册的 patch 应被自愈后正常启动');
+  await t.waitFor('界面已稳定', 60000, '稳定期完成');
+  t.assert(t.grepLog('移除了重复注册的 loader 条目'), '应记录重复条目自愈日志');
+  const healed = fs.readFileSync(patchFile, 'utf8');
+  t.assert((healed.match(/^\s*- id: balance$/gm) || []).length === 1, `balance 条目应去重为 1 个，实际=${healed}`);
+  const backups = fs.readdirSync(profileDir).filter((f) => f.startsWith('cordis.patch.yml.dup-'));
+  t.assert(backups.length >= 1, '原文件应被备份为 cordis.patch.yml.dup-<ts>');
+  const q = await t.quitAndCheck();
+  t.assert(q.exit.code === 0 && q.cleanExit === true, '干净退出');
+};
+
+SCENARIOS['heal-bundle-patch'] = async (t) => {
+  // bundle 迁移双登记自愈（issue #17 同族）：旧版本把后来升级为 bundle 的
+  // 配套插件写进了 cordis.patch.yml（insert 行），现经 dsh.profile.bundles
+  // 装配 → 同 id 双登记 → duplicate loader entry → 启动失败。启动时应自动
+  // 移除 patch 中的残留行并正常进入 Web UI。
+  const profileDir = path.join(t.dshHome, 'profiles', 'web');
+  fs.mkdirSync(profileDir, { recursive: true });
+  const stalePatch = [
+    '# 旧版本遗留：better-sidebar 还被当作非 bundle 写入 patch',
+    '- insert:',
+    '    - id: better-sidebar',
+    "      name: 'dsh-better-sidebar'",
+    '',
+  ].join('\n');
+  const patchFile = path.join(profileDir, 'cordis.patch.yml');
+  fs.writeFileSync(patchFile, stalePatch);
+  await t.waitFor('boot-ready', 240000, 'bundle 双登记应被自愈后正常启动');
+  await t.waitFor('界面已稳定', 60000, '稳定期完成');
+  t.assert(t.grepLog('已把 bundle 插件移出 profile patch'), '应记录 bundle 迁移自愈日志');
+  const healed = fs.readFileSync(patchFile, 'utf8');
+  t.assert(!/id: better-sidebar/.test(healed), `patch 中的 better-sidebar 残留行应被移除，实际=${healed}`);
+  const q = await t.quitAndCheck();
+  t.assert(q.exit.code === 0 && q.cleanExit === true, '干净退出');
+};
+
+SCENARIOS['heal-dup-patch-keeps-config'] = async (t) => {
+  // PR #24 v2 回归防线：自愈只允许删「重复注册行」，绝不删除用户手写的
+  // config 覆盖 / disabled 禁用条目（cordis.patch.yml 官方文件头声明的
+  // 顶层条目形态）。同 id 的重复 insert 注册 + disabled/config 覆盖共存时，
+  // 应去重注册行并原样保留用户配置条目后正常启动。
+  const profileDir = path.join(t.dshHome, 'profiles', 'web');
+  fs.mkdirSync(profileDir, { recursive: true });
+  const patch = [
+    '# 重复注册 balance + 用户手写的 disabled/config 覆盖条目',
+    '- insert:',
+    '    - id: balance',
+    "      name: '@deepseek-ai/dsh-balance'",
+    '- insert:',
+    '    - id: balance',
+    "      name: '@deepseek-ai/dsh-balance'",
+    '- id: balance',
+    '  disabled: true',
+    '- insert:',
+    '    - id: terminal',
+    "      name: '@deepseek-ai/dsh-terminal-tab'",
+    '- id: terminal',
+    '  config: {}',
+    '',
+  ].join('\n');
+  const patchFile = path.join(profileDir, 'cordis.patch.yml');
+  fs.writeFileSync(patchFile, patch);
+  await t.waitFor('boot-ready', 240000, '重复注册应被自愈，且用户配置条目保留');
+  await t.waitFor('界面已稳定', 60000, '稳定期完成');
+  t.assert(t.grepLog('移除了重复注册的 loader 条目'), '应记录重复条目自愈日志');
+  const healed = fs.readFileSync(patchFile, 'utf8');
+  t.assert((healed.match(/^\s*- id: balance$/gm) || []).length === 2, `balance 应只剩 1 条注册 + 1 条 disabled 覆盖，实际=${healed}`);
+  t.assert((healed.match(/^\s*- id: terminal$/gm) || []).length === 2, `terminal 应只剩 1 条注册 + 1 条 config 覆盖，实际=${healed}`);
+  t.assert(/disabled: true/.test(healed), '用户 disabled 条目应保留');
+  t.assert(/config: \{\}/.test(healed), '用户 config 覆盖条目应保留');
+  const backups = fs.readdirSync(profileDir).filter((f) => f.startsWith('cordis.patch.yml.dup-'));
+  t.assert(backups.length >= 1, '原文件应被备份为 cordis.patch.yml.dup-<ts>');
+  const q = await t.quitAndCheck();
+  t.assert(q.exit.code === 0 && q.cleanExit === true, '干净退出');
+};
+
+SCENARIOS['web-search-patch'] = async (t) => {
+  // issue #20：启动时必须把 web-search baseURL 契约补丁落到生效的 profile
+  // fallback 副本（junction 写穿内置包），并记录日志。
+  await t.waitFor('boot-ready', 240000, 'Web UI 就绪');
+  await t.waitFor('界面已稳定', 60000, '稳定期完成');
+  t.assert(t.grepLog('web-search baseURL 补丁'), '应记录 web-search baseURL 补丁日志');
+  const providerFile = path.join(t.dshHome, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-web-search-deepseek', 'lib', 'index.js');
+  t.assert(fs.existsSync(providerFile), 'profile fallback 应存在 provider 副本');
+  const src = fs.readFileSync(providerFile, 'utf8');
+  t.assert(src.includes('normalizedBase'), 'provider 应已写入归一化拼接补丁');
+  t.assert(src.includes('Anthropic 兼容 Messages API'), 'provider 应已写入协议契约指引');
+  const clientFile = path.join(t.dshHome, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-client-ui-settings-plugins', 'lib', 'client.js');
+  if (fs.existsSync(clientFile)) {
+    t.assert(fs.readFileSync(clientFile, 'utf8').includes('该提供方通过 Anthropic 兼容 Messages API 请求'), '设置页文案补丁应落盘');
+  } else {
+    t.assert(true, 'client 副本不在 profile fallback（不影响 provider 修复断言）');
+  }
+  const q = await t.quitAndCheck();
+  t.assert(q.exit.code === 0 && q.cleanExit === true, '干净退出');
+};
+
+SCENARIOS['vision-key-keep'] = async (t) => {
+  // 识图 apiKey 保存回归：role('secret') 字段永不回显，旧版卡片在「改其它
+  // 字段后保存」时会把已存密钥静默清空（用户反馈“密钥没法保存”）。修复后：
+  // 留空 = 保持已存密钥；仅非空输入才写入。
+  await t.waitFor('boot-ready', 240000, 'Web UI 就绪');
+  await t.waitFor('界面已稳定', 60000, '稳定期完成');
+  // 1) 同步进 profile 的 vision 客户端 bundle 必须携带修复标记。
+  const clientFile = path.join(t.dshHome, 'profiles', 'web', 'node_modules', '@dsh-external', 'dsh-vision', 'lib', 'client.js');
+  t.assert(fs.existsSync(clientFile), 'vision 客户端 bundle 应已同步进 profile');
+  const bundle = fs.readFileSync(clientFile, 'utf8');
+  t.assert(bundle.includes('保持已保存的密钥'), 'bundle 应包含「留空 = 保持已保存的密钥」提示');
+  t.assert(bundle.includes('apiKeyValue !== ""'), 'bundle 应包含「仅非空才写入密钥」逻辑');
+  // 2) 走与设置页一致的 RPC 链路验证语义。
+  const rpc = (method, payload) => new Promise((resolve, reject) => {
+    const body = JSON.stringify({ type: 'client-request', rpcId: 'r' + Date.now(), method, payload });
+    const base = webUrlOf(t);
+    const endpoint = new URL('/api/' + method, base);
+    const req = http.request({ host: endpoint.hostname, port: endpoint.port, path: endpoint.pathname, method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => { try { resolve({ status: res.statusCode, json: JSON.parse(data) }); } catch { reject(new Error('bad json (url=' + base + ' path=' + endpoint.pathname + ' status=' + res.statusCode + '): ' + String(data).slice(0, 300))); } });
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+  const keyInDisk = () => {
+    const sf = path.join(t.dshHome, 'settings.yaml');
+    if (!fs.existsSync(sf)) return null;
+    const m = /apiKey:\s*(\S+)/.exec(fs.readFileSync(sf, 'utf8'));
+    return m ? m[1] : null;
+  };
+  const s1 = await rpc('settings.mutate', { ns: 'dsh-vision', ops: [{ op: 'set', path: ['apiKey'], value: 'sk-user-key-abc' }] });
+  t.assert(s1.json && s1.json.result && s1.json.result.ok, '第一次保存密钥应成功');
+  t.assert(keyInDisk() === 'sk-user-key-abc', `密钥应落盘，实际=${keyInDisk()}`);
+  const s2 = await rpc('settings.mutate', { ns: 'dsh-vision', ops: [{ op: 'set', path: ['model'], value: 'glm-4.6v' }] });
+  t.assert(s2.json && s2.json.result && s2.json.result.ok, '第二次保存（只改模型）应成功');
+  t.assert(keyInDisk() === 'sk-user-key-abc', `改其它字段保存不得清空密钥，实际=${keyInDisk()}`);
+  const s3 = await rpc('settings.mutate', { ns: 'dsh-vision', ops: [{ op: 'set', path: ['apiKey'], value: 'sk-new-key-xyz' }] });
+  t.assert(s3.json && s3.json.result && s3.json.result.ok, '新密钥覆盖保存应成功');
+  t.assert(keyInDisk() === 'sk-new-key-xyz', `新密钥应覆盖旧值，实际=${keyInDisk()}`);
+  const q = await t.quitAndCheck();
+  t.assert(q.exit.code === 0 && q.cleanExit === true, '干净退出');
+};
+
+function webUrlOf(t) {
+  const m = /Web UI 就绪: (http:\/\/127\.0\.0\.1:\d+)/.exec(fs.readFileSync(t.desktopLog, 'utf8'));
+  return m ? m[1] : null;
+}
+
 SCENARIOS['kill-renderer'] = async (t) => {
   await t.waitFor('boot-ready', 240000, 'Web UI 就绪');
   await t.waitFor('界面已稳定', 60000, '稳定期完成');

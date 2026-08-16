@@ -131,6 +131,31 @@ dsh-desktop/
 └── dist/                 # Build output (not in repo)
 ```
 
+## Third-Party Open Source Components
+
+This project uses, references, or redistributes several third-party open source components. The full list (with licenses and sources, 772 components in total) is in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+Third-party community dsh plugins bundled with the installer:
+
+| Plugin | License | Source |
+|---|---|---|
+| `dsh-better-sidebar` | MIT | [omdsh-dev/DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) |
+| `@dsh-external/dsh-super-injector` | BSD-3-Clause | @dsh-external community |
+| `@dsh-external/dsh-vision` | BSD-3-Clause | @dsh-external community |
+| `harness-pet` | MIT | [cakeni/harness-pet](https://github.com/cakeni/harness-pet) |
+| `zat-dsh-engine` | MIT | [mishibeikejie/zat-dsh-engine](https://github.com/mishibeikejie/zat-dsh-engine) |
+
+Third-party community Agent presets bundled with the installer (`dsh-desktop/assets/agent-presets/`):
+
+| Preset | License | Source |
+|---|---|---|
+| `router-standard` | MIT | [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite) |
+| `anchored-standard` / `zero-anchored-standard` | MIT | [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) |
+| `v4-flash-godmode-opencode-go` | MIT | [SheberDavid/v4-flash-godmode-opencode-go](https://github.com/SheberDavid/v4-flash-godmode-opencode-go) |
+| `warmupbetter` / `warmupbetter-replay` | MIT | [0liveiraaa/myDshPresets](https://github.com/0liveiraaa/myDshPresets) |
+
+License declarations for runtime dependencies (Electron, zod, ws, schemastery, koffi, zstddec, etc.) and all transitive dependencies are in the list file above.
+
 ## License
 
 MIT. Based on [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) (MIT).

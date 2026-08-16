@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
 			autoOpenSubagent: true,
 			autoOpenJobs: true,
 			agentTerminalTools: false,
-			bottomPanelAutoTerminal: false, // personal branch: no auto terminal in the bottom panel
+			bottomPanelAutoTerminal: true,
 			terminalFontFamily: "",
 			terminalFontSize: 13,
 			interceptOpenPath: true,
@@ -733,12 +733,12 @@ window.__ModuleLoader__.load({
 			const bottomCap = Math.max(120, maxHeight - 280);
 			const rawHeight = typeof record.bottomHeight === "number" && Number.isFinite(record.bottomHeight) ? record.bottomHeight : 220;
 			const bottomHeight = Math.min(bottomCap, Math.max(120, Math.round(rawHeight)));
-			const bottomSplits = stripBottomTerminalTabs(sanitizeNode(record.bottomSplits, seen, reid) ?? {
+			const bottomSplits = sanitizeNode(record.bottomSplits, seen, reid) ?? {
 				kind: "leaf",
 				id: uid("pane"),
 				tabs: [],
 				active: null
-			});
+			};
 			const maxWidth = typeof window !== "undefined" ? window.innerWidth : Infinity;
 			return {
 				panelOpen: record.panelOpen,
@@ -825,27 +825,6 @@ window.__ModuleLoader__.load({
 					children
 				};
 			}
-		}
-		/** Personal branch: remove terminal tabs from the persisted bottom tree. */
-		function stripBottomTerminalTabs(node) {
-			if (node === void 0) return node;
-			const visit = (n) => {
-				if (n.kind === "leaf") {
-					const tabs = n.tabs.filter((tab) => tab.type !== "terminal");
-					if (tabs.length !== n.tabs.length) {
-						n.tabs = tabs;
-						if (n.active !== null && !tabs.some((tab) => tab.id === n.active)) {
-							n.active = tabs.length > 0 ? tabs[0].id : null;
-						}
-					}
-					return;
-				}
-				if (n.kind === "split") {
-					for (const child of n.children) visit(child);
-				}
-			};
-			visit(node);
-			return node;
 		}
 		/** The session-scoped store: one state per conversation, localStorage-backed. */
 		var SidebarStore = class {
@@ -5954,6 +5933,11 @@ window.__ModuleLoader__.load({
 							desc: () => t("settingsToolsDesc")
 						},
 						{
+							key: "bottomPanelAutoTerminal",
+							title: () => t("settingsBottomTerminalTitle"),
+							desc: () => t("settingsBottomTerminalDesc")
+						},
+						{
 							key: "terminalFontFamily",
 							type: "text",
 							title: () => t("settingsFontFamilyTitle"),
@@ -7107,12 +7091,32 @@ window.__ModuleLoader__.load({
 				};
 			}, [measureCenter]);
 			/**
-			* Personal branch: the bottom-panel first-expansion auto terminal is
-			* removed. The panel stays available for other tabs; terminals can
-			* still be opened manually in the right sidebar.
+			* Bottom-panel first-expansion auto terminal: the FIRST time the user
+			* expands the bottom panel in a session, try to open a fresh terminal tab
+			* there. "Try" is literal — the terminal's own quota and enable switch
+			* gate the attempt (a full quota or a disabled terminal type makes it a
+			* no-op). Gated on the bottomPanelAutoTerminal pref (the terminal tab's
+			* nested settings toggle, default on). Only a false→true TRANSITION fires
+			* (a panel persisted open never counts as an expansion), and the session's
+			* bottomOpenedOnce flag is set atomically with the first fire so later
+			* expansions never repeat it.
 			*/
+			const bottomWasOpenRef = (0, react.useRef)(void 0);
 			(0, react.useEffect)(() => {
-				return;
+				if (narrow) return;
+				if (state === void 0) return;
+				const wasOpen = bottomWasOpenRef.current;
+				bottomWasOpenRef.current = state.bottomOpen;
+				if (wasOpen === void 0 || wasOpen || !state.bottomOpen) return;
+				if (state.bottomOpenedOnce) return;
+				if (store.getPrefs().bottomPanelAutoTerminal === false) return;
+				if (ctx.betterSidebar?.isTabEnabled("terminal") === false) return;
+				store.reduce((s) => ({
+					...s,
+					activePane: firstLeaf(s.bottomSplits).id,
+					bottomOpenedOnce: true
+				}));
+				ctx.betterSidebar?.openTab({ type: "terminal" });
 			}, [
 				state,
 				store,
@@ -7685,7 +7689,7 @@ window.__ModuleLoader__.load({
 				autoOpenSubagent: typeof record.autoOpenSubagent === "boolean" ? record.autoOpenSubagent : SIDEBAR_PREFS_DEFAULTS.autoOpenSubagent,
 				autoOpenJobs: typeof record.autoOpenJobs === "boolean" ? record.autoOpenJobs : SIDEBAR_PREFS_DEFAULTS.autoOpenJobs,
 				agentTerminalTools: typeof record.agentTerminalTools === "boolean" ? record.agentTerminalTools : SIDEBAR_PREFS_DEFAULTS.agentTerminalTools,
-				bottomPanelAutoTerminal: false, // personal branch: force-disable persisted auto-terminal setting
+				bottomPanelAutoTerminal: typeof record.bottomPanelAutoTerminal === "boolean" ? record.bottomPanelAutoTerminal : SIDEBAR_PREFS_DEFAULTS.bottomPanelAutoTerminal,
 				terminalFontFamily: typeof record.terminalFontFamily === "string" ? record.terminalFontFamily : SIDEBAR_PREFS_DEFAULTS.terminalFontFamily,
 				terminalFontSize: typeof record.terminalFontSize === "number" && Number.isFinite(record.terminalFontSize) ? clampTerminalFontSize(record.terminalFontSize) : SIDEBAR_PREFS_DEFAULTS.terminalFontSize,
 				interceptOpenPath: typeof record.interceptOpenPath === "boolean" ? record.interceptOpenPath : SIDEBAR_PREFS_DEFAULTS.interceptOpenPath,

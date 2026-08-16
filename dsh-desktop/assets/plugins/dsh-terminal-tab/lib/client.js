@@ -414,7 +414,13 @@ window.__ModuleLoader__.load({
 			".dsh-term-line.c90{color:#5c6370}.dsh-term-line.c91{color:#f27d86}.dsh-term-line.c92{color:#a9d491}.dsh-term-line.c93{color:#eacf8e}.dsh-term-line.c94{color:#79b7f0}.dsh-term-line.c95{color:#d39be2}.dsh-term-line.c96{color:#67c6d2}.dsh-term-line.c97{color:#e4e4e8}",
 			".dsh-term-input{display:flex;align-items:center;gap:6px;padding:6px 10px;border-top:1px solid #2b2b31;flex:none}",
 			".dsh-term-prompt{color:#4ec97c;font-size:12px;flex:none}",
-			".dsh-term-input input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:#d4d4d4;font-family:inherit;font-size:12px;line-height:20px;padding:0}"
+			".dsh-term-input input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:#d4d4d4;font-family:inherit;font-size:12px;line-height:20px;padding:0}",
+			".dsh-term-pty{flex:1;min-height:0;margin:8px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.09);background:linear-gradient(180deg,rgba(12,14,18,.78),rgba(6,8,12,.86));backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);box-shadow:0 10px 30px rgba(0,0,0,.35), inset 0 1px rgba(255,255,255,.06);box-sizing:border-box}",
+			".dsh-term-pty .dxPSYW_terminalWrap{background:transparent!important;border-radius:12px}",
+			".dsh-term-pty .dxPSYW_terminal{padding:10px 12px 8px}",
+			".dsh-term-pty .xterm-viewport{background-color:transparent!important;scrollbar-color:rgba(255,255,255,.22) transparent}",
+			".dsh-term-pty .xterm{font-family:'CaskaydiaCove Nerd Font Mono','JetBrainsMono Nerd Font','MesloLGM Nerd Font','Cascadia Code',Consolas,monospace!important}",
+			".dsh-term-pty .dxPSYW_terminalBanner{border-radius:10px;margin:4px 8px}",
 		].join("");
 
 		const TAG = "@deepseek-ai/dsh-terminal-tab/client.css";
@@ -444,7 +450,7 @@ window.__ModuleLoader__.load({
 		}
 
 		const PTY_CHUNK_URL = "/sidebar/bundle/terminal.js";
-		const PTY_PREFS_FALLBACK = { terminalFontFamily: "", terminalFontSize: 13 };
+		const PTY_PREFS_FALLBACK = { terminalFontFamily: '"CaskaydiaCove Nerd Font Mono", "JetBrainsMono Nerd Font", "MesloLGM Nerd Font", "Cascadia Code", Consolas, monospace', terminalFontSize: 13 };
 		let ptyTerminalLoad = null;
 
 		function loadPtyTerminal() {
@@ -486,8 +492,12 @@ window.__ModuleLoader__.load({
 				getPrefs() {
 					try {
 						const prefs = service && typeof service.getSnapshot === "function" ? service.getSnapshot().prefs : null;
-						return prefs && typeof prefs === "object" ? prefs : PTY_PREFS_FALLBACK;
-					} catch { return PTY_PREFS_FALLBACK; }
+						const base = prefs && typeof prefs === "object" ? { ...prefs } : { ...PTY_PREFS_FALLBACK };
+						if (!base.terminalFontFamily || String(base.terminalFontFamily).trim() === "") {
+							base.terminalFontFamily = PTY_PREFS_FALLBACK.terminalFontFamily;
+						}
+						return base;
+					} catch { return { ...PTY_PREFS_FALLBACK }; }
 				},
 				subscribe(listener) {
 					if (service && typeof service.subscribeState === "function") return service.subscribeState(listener);
@@ -535,11 +545,13 @@ window.__ModuleLoader__.load({
 				return react.createElement("div", { className: "dsh-term-root" },
 					react.createElement("div", { className: "dsh-term-hint" }, "正在启动终端…"));
 			}
-			return react.createElement(PtyView, {
-				scope: { sessionId, cwd },
-				tabId: "conversation-terminal:" + sessionId,
-				store
-			});
+			return react.createElement("div", { className: "dsh-term-pty" },
+				react.createElement(PtyView, {
+					scope: { sessionId, cwd },
+					tabId: "conversation-terminal:" + sessionId,
+					store,
+					acrylic: true
+				}));
 		}
 
 		const inject = ["slots"];

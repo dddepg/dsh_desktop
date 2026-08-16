@@ -7989,7 +7989,7 @@ globalThis.__dshChunks__["terminal"] = (require) => {
 		};
 	}
 	function TerminalView(props) {
-		const { scope, tabId, store } = props;
+		const { scope, tabId, store, acrylic } = props;
 		const hostRef = (0, react.useRef)(null);
 		const [connected, setConnected] = (0, react.useState)(false);
 		const [fatal, setFatal] = (0, react.useState)(null);
@@ -7999,6 +7999,8 @@ globalThis.__dshChunks__["terminal"] = (require) => {
 			const host = hostRef.current;
 			if (host === null) return;
 			const font = resolveTerminalFont(store.getPrefs(), tokenValue("--ds-font-family-code"));
+			const terminalTheme = xtermTheme();
+			if (acrylic) terminalTheme.background = "rgba(0,0,0,0)";
 			const term = new import_xterm.Terminal({
 				cursorBlink: true,
 				fontSize: font.fontSize,
@@ -8006,12 +8008,14 @@ globalThis.__dshChunks__["terminal"] = (require) => {
 				allowTransparency: true,
 				convertEol: false,
 				scrollback: 4e3,
-				theme: xtermTheme()
+				theme: terminalTheme
 			});
 			const fit = new import_addon_fit.FitAddon();
 			term.loadAddon(fit);
 			const applyTheme = () => {
-				term.options.theme = xtermTheme();
+				const nextTheme = xtermTheme();
+				if (acrylic) nextTheme.background = "rgba(0,0,0,0)";
+				term.options.theme = nextTheme;
 				term.refresh(0, term.rows - 1);
 			};
 			const schemeSub = subscribeColorScheme(applyTheme);

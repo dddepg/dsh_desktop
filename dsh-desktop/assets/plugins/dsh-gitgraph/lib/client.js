@@ -203,15 +203,33 @@ window.__ModuleLoader__.load({
 							const y = yOf(i);
 							const refs = commit.refs || [];
 							const refText = refs.map((ref) => ref.kind === "head" ? "HEAD → " + ref.name : ref.name).join("  ");
-							return react.createElement("text", {
-								key: "label:" + commit.hash,
-								x: labelX,
-								y: y + 3,
-								fontSize: 11,
-								fill: refs.length > 0 ? (REF_COLORS[refs[0].kind] || "#c8c8d0") : "#9a9aa6"
-							},
-								refs.length > 0 ? react.createElement("tspan", { fill: REF_COLORS[refs[0].kind] || "#c8c8d0" }, refText + "  ") : null,
-								react.createElement("tspan", { fill: "#9a9aa6" }, commit.subject.length > 80 ? commit.subject.slice(0, 80) + "…" : commit.subject));
+							const refColor = refs.length > 0 ? (REF_COLORS[refs[0].kind] || "#7fb3ff") : "#7fb3ff";
+							const refWidth = refs.length > 0 ? Math.max(46, refText.length * 6.2 + 16) : 0;
+							return react.createElement("g", { key: "label:" + commit.hash },
+								refs.length > 0 ? react.createElement("rect", {
+									x: labelX - 6,
+									y: y - 8,
+									width: refWidth,
+									height: 16,
+									rx: 8,
+									fill: refColor,
+									fillOpacity: 0.14,
+									stroke: refColor,
+									strokeOpacity: 0.75,
+									strokeWidth: 1
+								}) : null,
+								refs.length > 0 ? react.createElement("text", {
+									x: labelX,
+									y: y + 3,
+									fontSize: 10.5,
+									fill: refColor
+								}, refText) : null,
+								react.createElement("text", {
+									x: labelX + (refs.length > 0 ? refWidth + 2 : 0),
+									y: y + 3,
+									fontSize: 11,
+									fill: "#9a9aa6"
+								}, commit.subject.length > 80 ? commit.subject.slice(0, 80) + "…" : commit.subject));
 						}))));
 		}
 

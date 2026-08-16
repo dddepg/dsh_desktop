@@ -2546,29 +2546,42 @@ function startBalanceLoop() {
 // 配套 dsh 插件同步（注入 web profile：余额小部件 + 文件更改追踪/还原）
 // ---------------------------------------------------------------------------
 
-const COMPANION_PLUGINS = [
-  { id: 'balance', name: '@deepseek-ai/dsh-balance' },
-  { id: 'file-changes', name: '@deepseek-ai/dsh-file-changes' },
-  { id: 'client-file-changes', name: '@deepseek-ai/dsh-client-file-changes' },
-  { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
-  { id: 'gitgraph', name: '@deepseek-ai/dsh-gitgraph' },
-  { id: 'skin-switch', name: '@deepseek-ai/dsh-skin-switch' },
-  { id: 'effort-slider', name: 'dsh-client-ui-effort-slider' },
-  { id: 'plugin-market', name: 'zat-dsh-engine' },
-  { id: 'better-sidebar', name: 'dsh-better-sidebar' },
-  { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
-  // 对话节点导航条（vlln/dsh-navbar，MIT）：对话区右缘节点串快速跳转
-  // user 消息（悬停预览/点击跳转/滚轮切换），取代 conversation-tweaks
-  // 内置的会话滑轨。
-  { id: 'dsh-navbar', name: '@vlln/dsh-navbar' },
-  { id: 'compaction-acp', name: 'billion-context-dsh' },
-  { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
-  { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
-  { id: 'prompt-custom', name: '@deepseek-ai/dsh-prompt-custom' },
-  { id: 'third-party-thinking', name: '@deepseek-ai/dsh-third-party-thinking' },
-  { id: 'wsl-settings', name: '@deepseek-ai/dsh-wsl-settings' },
-  { id: 'dsh-vision', name: '@dsh-external/dsh-vision' },
-];
+const COMPANION_PLUGINS_DIR = path.join(__dirname, 'assets', 'plugins');
+const DISABLED_PLUGIN_MARKER = '.disabled';
+
+// 文件扫描式插件发现：assets/plugins 下每个目录即一个配套插件。
+// 目录内放置 .disabled 可禁用该插件；id 优先取 package.json 的
+// dshDesktop.id，其次 cordis.patch.yml / dsh.plugin.json 中的注册 id，
+// 最后回退为包名最后一段。新增插件只需新增目录，无需修改清单。
+function scanCompanionPlugins() {
+  const rows = [];
+  let entries = [];
+  try { entries = fs.readdirSync(COMPANION_PLUGINS_DIR, { withFileTypes: true }); } catch { return rows; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const src = path.join(COMPANION_PLUGINS_DIR, entry.name);
+    if (fs.existsSync(path.join(src, DISABLED_PLUGIN_MARKER))) continue;
+    const pkg = readJsonFile(path.join(src, 'package.json'));
+    if (!pkg || typeof pkg.name !== 'string' || !pkg.name) continue;
+    let id = pkg.dshDesktop && typeof pkg.dshDesktop.id === 'string' ? pkg.dshDesktop.id : '';
+    if (!id) {
+      try {
+        const patchText = fs.readFileSync(path.join(src, 'cordis.patch.yml'), 'utf8');
+        const m = patchText.match(/^\s*-\s*id:\s*([\w-]+)/m);
+        if (m) id = m[1];
+      } catch {}
+    }
+    if (!id) {
+      try {
+        const manifest = readJsonFile(path.join(src, 'dsh.plugin.json'));
+        if (manifest && typeof manifest.id === 'string') id = manifest.id;
+      } catch {}
+    }
+    if (!id) id = pkg.name.includes('/') ? pkg.name.slice(pkg.name.lastIndexOf('/') + 1) : pkg.name;
+    rows.push({ id, name: pkg.name, dir: entry.name });
+  }
+  return rows.sort((a, b) => a.dir.localeCompare(b.dir));
+}
 
 // 内置皮肤包目录：assets/skins/<id>/。每个皮肤是完整的 dsh client 插件包
 // （package.json + lib/ + skin.json + 预览图与许可文件），同步进 web profile
@@ -2587,6 +2600,7 @@ function readJsonFile(file) {
 }
 
 function companionDirName(p) {
+  if (p.dir) return p.dir;
   const slash = p.name.indexOf('/');
   return slash >= 0 ? p.name.slice(slash + 1) : p.name;
 }
@@ -2813,7 +2827,8 @@ function syncCompanionPlugins() {
     const profileDir = path.join(home, 'profiles', 'web');
     const profileModules = path.join(profileDir, 'node_modules', '@deepseek-ai');
     fs.mkdirSync(profileModules, { recursive: true });
-    const expectedDirs = new Set(COMPANION_PLUGINS.map(companionDirName));
+    const companionPlugins = scanCompanionPlugins();
+    const expectedDirs = new Set(companionPlugins.map(companionDirName));
     removeStaleCompanionPlugins(profileModules, expectedDirs);
     removeLegacyMarketplace(path.join(profileDir, 'node_modules'), profileDir);
     removeRetiredHarnessPet(profileDir);
@@ -2824,7 +2839,7 @@ function syncCompanionPlugins() {
     // 会让 dsh web 启动崩溃）；若 manifest 仍登记为 bundle，则视为用户
     // 意图禁用，从 bundles 移除。
     const missingSourceNames = new Set();
-    for (const p of COMPANION_PLUGINS) {
+    for (const p of companionPlugins) {
       const sdir = path.join(__dirname, 'assets', 'plugins', companionDirName(p));
       if (!fs.existsSync(path.join(sdir, 'package.json'))) missingSourceNames.add(p.name);
     }
@@ -2844,7 +2859,7 @@ function syncCompanionPlugins() {
       if (!fs.existsSync(sdir)) continue;
       syncDir(sdir, path.join(profileDir, 'node_modules', name));
     }
-    for (const p of COMPANION_PLUGINS) {
+    for (const p of companionPlugins) {
       const rel = companionDirName(p);
       const src = path.join(__dirname, 'assets', 'plugins', rel);
       if (!fs.existsSync(path.join(src, 'package.json'))) continue;
@@ -2985,7 +3000,7 @@ function syncCompanionPlugins() {
     // 整树加载失败（更新后首次启动崩溃）。幂等移除命中的注册行/块；用户手写
     // 的 config 覆盖/disabled 禁用条目原样保留（PR #24 v2）。
     const bundleIds = new Set();
-    for (const p of COMPANION_PLUGINS) {
+    for (const p of companionPlugins) {
       if (bundleNames.has(p.name)) bundleIds.add(p.id);
     }
     if (bundleIds.size > 0 && patch.includes('- id:')) {
@@ -3000,7 +3015,7 @@ function syncCompanionPlugins() {
     // 不存在的包（issue #34 诊断的「Cannot find package」崩溃）；用户手写
     // 的 config/disabled 覆盖条目由 dropBlocksByIds 语义原样保留。
     if (missingSourceNames.size > 0 && patch.includes('- id:')) {
-      const missingIds = COMPANION_PLUGINS.filter((p) => missingSourceNames.has(p.name)).map((p) => p.id);
+      const missingIds = companionPlugins.filter((p) => missingSourceNames.has(p.name)).map((p) => p.id);
       if (missingIds.length > 0) {
         const drop = dropBlocksByIds(patch, missingIds);
         if (drop.removed.length > 0) {
@@ -3013,7 +3028,7 @@ function syncCompanionPlugins() {
     // 非 bundle 插件与内置皮肤统一注册（皮肤默认 disabled，由 dsh-skin-switch
     // 互斥激活）。
     const patchRows = [];
-    for (const p of COMPANION_PLUGINS) {
+    for (const p of companionPlugins) {
       if (bundleNames.has(p.name)) continue;
       if (missingSourceNames.has(p.name)) continue;
       patchRows.push({ id: p.id, name: p.name, disabled: false, rename: true });

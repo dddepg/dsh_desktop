@@ -6,8 +6,12 @@
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    ".": { "default": "./lib/index.js" },
-    "./client": { "default": "./lib/client.js" },
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "license": "MIT",
@@ -18,5 +22,8 @@
   },
   "peerDependencies": {
     "dsh-better-sidebar": ">=0.4.0"
+  },
+  "dshDesktop": {
+    "id": "gitgraph"
   }
 }

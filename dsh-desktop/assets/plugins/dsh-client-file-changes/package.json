@@ -6,18 +6,27 @@
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    ".": { "default": "./lib/index.js" },
-    "./client": { "default": "./lib/client.js" },
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "license": "MIT",
   "dsh": {
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-ui-conversation"],
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
       "platform": "web"
     }
   },
   "peerDependencies": {
     "react": "^18.2.0"
+  },
+  "dshDesktop": {
+    "id": "client-file-changes"
   }
 }

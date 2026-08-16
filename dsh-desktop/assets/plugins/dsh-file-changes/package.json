@@ -6,11 +6,16 @@
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    ".": { "default": "./lib/index.js" },
+    ".": {
+      "default": "./lib/index.js"
+    },
     "./package.json": "./package.json"
   },
   "license": "MIT",
   "peerDependencies": {
     "zod": "^3.0.0"
+  },
+  "dshDesktop": {
+    "id": "file-changes"
   }
 }

@@ -20,5 +20,8 @@
       ]
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dshDesktop": {
+    "id": "skin-switch"
+  }
 }

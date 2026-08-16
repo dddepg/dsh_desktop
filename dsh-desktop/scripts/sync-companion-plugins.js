@@ -31,30 +31,42 @@ const { spawnSync } = require('node:child_process');
 
 const { installBuiltinPresets } = require('./install-minimal-win-preset');
 
-// 与 main.js COMPANION_PLUGINS 保持一致（保持同步时请两处一起改）。
-const COMPANION_PLUGINS = [
-  { id: 'balance', name: '@deepseek-ai/dsh-balance' },
-  { id: 'file-changes', name: '@deepseek-ai/dsh-file-changes' },
-  { id: 'client-file-changes', name: '@deepseek-ai/dsh-client-file-changes' },
-  { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
-  { id: 'gitgraph', name: '@deepseek-ai/dsh-gitgraph' },
-  { id: 'skin-switch', name: '@deepseek-ai/dsh-skin-switch' },
-  { id: 'effort-slider', name: 'dsh-client-ui-effort-slider' },
-  { id: 'plugin-market', name: 'zat-dsh-engine' },
-  { id: 'better-sidebar', name: 'dsh-better-sidebar' },
-  { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
-  { id: 'dsh-navbar', name: '@vlln/dsh-navbar' },
-  { id: 'dsh-session-manager', name: 'dsh-session-manager' },
-  { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
-  { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
-  { id: 'prompt-custom', name: '@deepseek-ai/dsh-prompt-custom' },
-  { id: 'third-party-thinking', name: '@deepseek-ai/dsh-third-party-thinking' },
-  { id: 'wsl-settings', name: '@deepseek-ai/dsh-wsl-settings' },
-  { id: 'dsh-vision', name: '@dsh-external/dsh-vision' },
-  { id: 'side-session', name: '@dsh-external/dsh-side-session' },
-  { id: 'compaction-acp', name: 'billion-context-dsh' },
-  { id: 'plugin-manager', name: '@deepseek-ai/dsh-plugin-manager' },
-];
+// 文件扫描式插件发现（与 main.js scanCompanionPlugins 同逻辑）：
+// assets/plugins 下每个目录即一个插件，目录内放 .disabled 可禁用。
+// id 优先取 package.json 的 dshDesktop.id，其次 cordis.patch.yml /
+// dsh.plugin.json，最后回退为包名最后一段。
+const COMPANION_PLUGINS_DIR = path.join(__dirname, '..', 'assets', 'plugins');
+const DISABLED_PLUGIN_MARKER = '.disabled';
+
+function scanCompanionPlugins() {
+  const rows = [];
+  let entries = [];
+  try { entries = fs.readdirSync(COMPANION_PLUGINS_DIR, { withFileTypes: true }); } catch { return rows; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const src = path.join(COMPANION_PLUGINS_DIR, entry.name);
+    if (fs.existsSync(path.join(src, DISABLED_PLUGIN_MARKER))) continue;
+    const pkg = readJsonFile(path.join(src, 'package.json'));
+    if (!pkg || typeof pkg.name !== 'string' || !pkg.name) continue;
+    let id = pkg.dshDesktop && typeof pkg.dshDesktop.id === 'string' ? pkg.dshDesktop.id : '';
+    if (!id) {
+      try {
+        const patchText = fs.readFileSync(path.join(src, 'cordis.patch.yml'), 'utf8');
+        const m = patchText.match(/^\s*-\s*id:\s*([\w-]+)/m);
+        if (m) id = m[1];
+      } catch {}
+    }
+    if (!id) {
+      try {
+        const manifest = readJsonFile(path.join(src, 'dsh.plugin.json'));
+        if (manifest && typeof manifest.id === 'string') id = manifest.id;
+      } catch {}
+    }
+    if (!id) id = pkg.name.includes('/') ? pkg.name.slice(pkg.name.lastIndexOf('/') + 1) : pkg.name;
+    rows.push({ id, name: pkg.name, dir: entry.name });
+  }
+  return rows.sort((a, b) => a.dir.localeCompare(b.dir));
+}
 
 const PLUGIN_FILES = [
   'package.json', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md',
@@ -76,6 +88,7 @@ function readJsonFile(file) {
 }
 
 function companionDirName(p) {
+  if (p.dir) return p.dir;
   const slash = p.name.indexOf('/');
   return slash >= 0 ? p.name.slice(slash + 1) : p.name;
 }
@@ -208,6 +221,7 @@ function removeRetiredHarnessPet(home, dryRun) {
 // ---------------------------------------------------------------------------
 
 function syncPlugins(home, dryRun) {
+  const companionPlugins = scanCompanionPlugins();
   const profileDir = path.join(home, 'profiles', 'web');
   const profileModules = path.join(profileDir, 'node_modules', '@deepseek-ai');
   if (dryRun) {
@@ -217,7 +231,7 @@ function syncPlugins(home, dryRun) {
   }
 
   // 清理本工具历史版本遗留的旧包名（私有 + 描述含 "DSH Desktop" 的才动）。
-  const expectedDirs = new Set(COMPANION_PLUGINS.map(companionDirName));
+  const expectedDirs = new Set(companionPlugins.map(companionDirName));
   let entries;
   try { entries = fs.readdirSync(profileModules, { withFileTypes: true }); } catch { entries = []; }
   for (const entry of entries) {
@@ -248,7 +262,7 @@ function syncPlugins(home, dryRun) {
 
   // 拷贝插件文件；bundle 插件（package.json 声明 dsh.bundle.patch）不写 patch 行。
   const bundleNames = new Set();
-  for (const p of COMPANION_PLUGINS) {
+  for (const p of companionPlugins) {
     const rel = companionDirName(p);
     const src = path.join(__dirname, '..', 'assets', 'plugins', rel);
     if (!fs.existsSync(path.join(src, 'package.json'))) {
@@ -344,7 +358,7 @@ function syncPlugins(home, dryRun) {
   try { patch = fs.readFileSync(patchFile, 'utf8'); } catch { patch = ''; }
   let changed = false;
   const patchRows = [];
-  for (const p of COMPANION_PLUGINS) {
+  for (const p of companionPlugins) {
     if (bundleNames.has(p.name)) continue;
     patchRows.push({ id: p.id, name: p.name, disabled: false, rename: true });
   }

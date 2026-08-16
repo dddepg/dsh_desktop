@@ -22,5 +22,8 @@
       ],
       "platform": "web"
     }
+  },
+  "dshDesktop": {
+    "id": "terminal"
   }
 }

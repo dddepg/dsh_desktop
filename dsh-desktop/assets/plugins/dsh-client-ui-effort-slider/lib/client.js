@@ -2426,24 +2426,82 @@ function EffortModelSelect(props) {
       "div",
       { id: menuId, className: "ds-effort-menu", role: "menu", "aria-label": t("menu.aria"), "aria-busy": state && (state.status === "loading" || busy) },
       pane === "root" && [
+        state && state.error !== null && lastActionRef.current === "load" && React.createElement(
+          "div",
+          { className: "ds-effort-error" },
+          React.createElement("span", null, t("error.action", { message: state.error })),
+          React.createElement("button", { type: "button", className: "ds-effort-retry", onClick: reload }, t("action.reload")),
+        ),
+        React.createElement(
+          "div",
+          { key: "advanced", className: "ds-effort-advanced" },
+          React.createElement(EffortSlider, {
+            supported,
+            value: sliderIndex,
+            disabled: busy,
+            onChange: chooseEffort,
+            labels: {
+              label: t("effort.title"),
+              axisLow: t("effort.axisLow"),
+              axisHigh: t("effort.axisHigh"),
+              tooltip: t("effort.tooltip"),
+              inputAria: t("effort.ariaLabel"),
+              helpAria: t("effort.helpAria"),
+            },
+          }),
+          React.createElement(
+            "div",
+            { key: "extras", className: "ds-effort-extras" },
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                role: "menuitemradio",
+                "aria-checked": Boolean(defaultChosen || (appliedLevel && appliedLevel.canonical === "default")),
+                className: "ds-effort-extraItem" + (defaultChosen || (appliedLevel && appliedLevel.canonical === "default")
+                  ? " ds-effort-extraItemActive"
+                  : ""),
+                disabled: busy,
+                onClick: chooseDefault,
+              },
+              React.createElement("span", null, t("effort.providerDefault")),
+            ),
+            extraEfforts.map((eff) => {
+              const active = effectiveEffort === eff.id;
+              return React.createElement(
+                "button",
+                {
+                  type: "button",
+                  role: "menuitemradio",
+                  "aria-checked": active,
+                  className: "ds-effort-extraItem" + (active ? " ds-effort-extraItemActive" : ""),
+                  disabled: busy,
+                  key: eff.id,
+                  onClick: () => chooseExtraEffort(eff),
+                },
+                React.createElement("span", null, eff.name),
+                active && React.createElement("span", { className: "ds-effort-check" }, "✓"),
+              );
+            }),
+          ),
+        ),
+        React.createElement("div", { key: "separator", className: "ds-effort-separator", "aria-hidden": "true" }),
         React.createElement(
           "button",
-          { ref: itemRef(), type: "button", role: "menuitem", className: "ds-effort-cell", onClick: () => setPane("model") },
-          React.createElement("span", { className: "ds-effort-cellLabel" }, t("menu.model")),
-          React.createElement("span", { className: "ds-effort-cellValue" }, modelLabel),
-          React.createElement("svg", { className: "ds-effort-cellChevron", viewBox: "0 0 16 16", width: "14", height: "14", "aria-hidden": "true" },
-            React.createElement("path", { d: "M6 4l4 4-4 4", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round" })),
-        ),
-        reasoning !== void 0 && React.createElement(
-          "button",
-          { ref: itemRef(), type: "button", role: "menuitem", className: "ds-effort-cell", onClick: () => setPane("effort") },
-          React.createElement("span", { className: "ds-effort-cellLabel" }, t("menu.effort")),
-          React.createElement("span", { className: "ds-effort-cellValue" }, effortLabel),
+          { ref: itemRef(), type: "button", role: "menuitem", className: "ds-effort-modelRow", onClick: () => setPane("model") },
+          React.createElement("span", { className: "ds-effort-modelRowName" }, modelLabel),
+          React.createElement("span", { className: "ds-effort-modelRowEffort" }, effortLabel),
           React.createElement("svg", { className: "ds-effort-cellChevron", viewBox: "0 0 16 16", width: "14", height: "14", "aria-hidden": "true" },
             React.createElement("path", { d: "M6 4l4 4-4 4", fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round" })),
         ),
       ],
       pane === "model" && [
+        React.createElement(
+          "button",
+          { ref: itemRef(), type: "button", role: "menuitem", className: "ds-effort-back", onClick: () => setPane("root") },
+          React.createElement("span", { "aria-hidden": "true" }, "‹"),
+          React.createElement("span", null, t("menu.back")),
+        ),
         state && state.status === "loading" && React.createElement("div", { className: "ds-effort-status" }, t("status.loading")),
         state && state.error !== null && lastActionRef.current === "load" && React.createElement(
           "div",
@@ -2497,66 +2555,6 @@ function EffortModelSelect(props) {
         ),
         state && state.status === "ready" && choices.length === 0 && React.createElement("div", { className: "ds-effort-empty" }, t("empty.models")),
       ],
-      pane === "effort" && [
-        state && state.error !== null && lastActionRef.current === "load" && React.createElement(
-          "div",
-          { className: "ds-effort-error" },
-          React.createElement("span", null, t("error.action", { message: state.error })),
-          React.createElement("button", { type: "button", className: "ds-effort-retry", onClick: reload }, t("action.reload")),
-        ),
-        [
-          React.createElement(EffortSlider, {
-            key: "slider",
-            supported,
-            value: sliderIndex,
-            disabled: busy,
-            onChange: chooseEffort,
-            labels: {
-              label: t("effort.title"),
-              axisLow: t("effort.axisLow"),
-              axisHigh: t("effort.axisHigh"),
-              tooltip: t("effort.tooltip"),
-              inputAria: t("effort.ariaLabel"),
-              helpAria: t("effort.helpAria"),
-            },
-          }),
-          React.createElement(
-            "div",
-            { key: "extras", className: "ds-effort-extras" },
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                role: "menuitemradio",
-                "aria-checked": Boolean(defaultChosen || (appliedLevel && appliedLevel.canonical === "default")),
-                className: "ds-effort-extraItem" + (defaultChosen || (appliedLevel && appliedLevel.canonical === "default")
-                  ? " ds-effort-extraItemActive"
-                  : ""),
-                disabled: busy,
-                onClick: chooseDefault,
-              },
-              React.createElement("span", null, t("effort.providerDefault")),
-            ),
-            extraEfforts.map((eff) => {
-              const active = effectiveEffort === eff.id;
-              return React.createElement(
-                "button",
-                {
-                  type: "button",
-                  role: "menuitemradio",
-                  "aria-checked": active,
-                  className: "ds-effort-extraItem" + (active ? " ds-effort-extraItemActive" : ""),
-                  disabled: busy,
-                  key: eff.id,
-                  onClick: () => chooseExtraEffort(eff),
-                },
-                React.createElement("span", null, eff.name),
-                active && React.createElement("span", { className: "ds-effort-check" }, "✓"),
-              );
-            }),
-          ),
-        ],
-      ],
     ),
     toast !== null && React.createElement(
       "div",
@@ -2577,6 +2575,7 @@ const DICT_ZH = {
   "trigger.ariaEffort": "选择模型，当前 {model}，推理等级 {effort}",
   "menu.aria": "模型与推理等级",
   "menu.model": "模型",
+  "menu.back": "选择模型",
   "menu.effort": "推理等级",
   "effort.providerDefault": "Default",
   "effort.title": "推理等级",
@@ -2605,6 +2604,7 @@ const DICT_EN = {
   "trigger.ariaEffort": "Select model, current {model}, reasoning effort {effort}",
   "menu.aria": "Model and reasoning effort",
   "menu.model": "Model",
+  "menu.back": "Select model",
   "menu.effort": "Effort",
   "effort.providerDefault": "Default",
   "effort.title": "Reasoning effort",
@@ -2639,7 +2639,7 @@ const CSS = `
 @keyframes ds-effort-trigger-flow{to{background-position:200% center}}
 .ds-effort-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .12s}
 .ds-effort-chevronOpen{transform:rotate(180deg)}
-.ds-effort-menu{z-index:20;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-menu,var(--dsw-alias-bg-layer-1));width:min(252px,100vw - 32px);max-height:min(400px,100vh - 96px);box-shadow:var(--dsw-shadow-lv3,0 12px 28px rgba(0,0,0,.12));color:var(--dsw-alias-label-primary);border-radius:12px;flex-direction:column;padding:4px;display:flex;position:absolute;bottom:calc(100% + 8px);right:0;overflow-y:auto;overflow-x:hidden;transform-origin:bottom right;animation:ds-effort-menu-in 160ms cubic-bezier(.22,.61,.36,1)}
+.ds-effort-menu{z-index:20;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-menu,var(--dsw-alias-bg-layer-1));width:min(312px,100vw - 32px);max-height:min(400px,100vh - 96px);box-shadow:var(--dsw-shadow-lv3,0 12px 28px rgba(0,0,0,.12));color:var(--dsw-alias-label-primary);border-radius:12px;flex-direction:column;padding:4px;display:flex;position:absolute;bottom:calc(100% + 8px);right:0;overflow-y:auto;overflow-x:hidden;transform-origin:bottom right;animation:ds-effort-menu-in 160ms cubic-bezier(.22,.61,.36,1)}
 @keyframes ds-effort-menu-in{from{opacity:0;transform:scale(.97) translateY(4px)}}
 .ds-effort-status,.ds-effort-empty{color:var(--dsw-alias-label-tertiary);padding:10px;font-size:13px;line-height:20px}
 .ds-effort-error,.ds-effort-warning{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-error-primary);border-radius:8px;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px;padding:7px 8px;font-size:12px;line-height:18px;display:flex}
@@ -2668,6 +2668,15 @@ const CSS = `
 .ds-effort-extras{margin-top:12px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;display:flex;flex-wrap:wrap;gap:6px}
 .ds-effort-extras .ds-effort-extraItem{width:auto;border:1px solid var(--dsw-alias-border-l1);padding:4px 10px;border-radius:999px;justify-content:flex-start}
 .ds-effort-extras .ds-effort-extraItemActive{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-interactive-bg-selected,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary)}
+.ds-effort-advanced{padding:10px 12px 8px}
+.ds-effort-advanced ds-effort-slider{--ds-effort-width:100%}
+.ds-effort-separator{height:1px;background:var(--dsw-alias-border-l1);margin:0}
+.ds-effort-modelRow{width:100%;border:0;background:0 0;border-radius:8px;cursor:pointer;display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;min-height:42px;padding:0 12px;color:var(--dsw-alias-label-primary)}
+.ds-effort-modelRow:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}
+.ds-effort-modelRowName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500;line-height:20px}
+.ds-effort-modelRowEffort{color:var(--dsw-alias-brand-primary,#8c73c9);font-size:12px;line-height:20px}
+.ds-effort-back{width:100%;border:0;background:0 0;border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:6px;height:32px;padding:0 8px;text-align:left;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.ds-effort-back:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}
 .ds-effort-toast{position:absolute;top:calc(100% + 6px);right:0;z-index:30;max-width:280px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-error-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;font-size:12px;line-height:18px;display:flex;align-items:flex-start;gap:8px;box-shadow:var(--dsw-shadow-lv3,0 12px 28px rgba(0,0,0,.12));overflow:hidden;animation:ds-effort-toast-in 220ms cubic-bezier(.22,.61,.36,1)}
 .ds-effort-toast::after{content:"";position:absolute;left:0;bottom:0;height:2px;width:100%;background:currentColor;opacity:.45;animation:ds-effort-toast-countdown 2.6s linear forwards}
 .ds-effort-toastClose{cursor:pointer;background:0 0;border:0;color:inherit;font-size:14px;line-height:18px;padding:0}

@@ -814,6 +814,7 @@ export function sanitizeState(parsed: unknown): SidebarState | undefined {
   // Bottom-panel fields arrived in a later build: a missing or malformed
   // value on an OLDER persisted state defaults (closed / default height /
   // empty pane) so existing layouts keep loading, like nextBrowser.
+  const bottomOpen = record.bottomOpen === true
   // Cap the persisted height so the center column (the agent output area)
   // keeps at least PANEL_MIN tall (a stale full-height bottom panel from an
   // older build must never squeeze the conversation to zero).
@@ -825,9 +826,6 @@ export function sanitizeState(parsed: unknown): SidebarState | undefined {
   const bottomHeight = Math.min(bottomCap, Math.max(BOTTOM_MIN, Math.round(rawHeight)))
   const bottomSplits = stripBottomTerminalTabs(sanitizeNode(record.bottomSplits, seen, reid)
     ?? { kind: 'leaf' as const, id: uid('pane'), tabs: [], active: null })
-  // Personal branch: if terminal tabs were the bottom panel's only content,
-  // leave the panel closed instead of showing an empty strip.
-  const bottomOpen = record.bottomOpen === true && allLeaves(bottomSplits).some(leaf => leaf.tabs.length > 0)
   const maxWidth = typeof window !== 'undefined' ? window.innerWidth : Infinity
   return {
     panelOpen: record.panelOpen,

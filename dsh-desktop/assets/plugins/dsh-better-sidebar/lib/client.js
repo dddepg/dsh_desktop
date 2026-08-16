@@ -728,6 +728,7 @@ window.__ModuleLoader__.load({
 			const reid = /* @__PURE__ */ new Map();
 			const splits = sanitizeNode(record.splits, seen, reid);
 			if (splits === void 0) return void 0;
+			const bottomOpen = record.bottomOpen === true;
 			const maxHeight = typeof window !== "undefined" ? window.innerHeight : Infinity;
 			const bottomCap = Math.max(120, maxHeight - 280);
 			const rawHeight = typeof record.bottomHeight === "number" && Number.isFinite(record.bottomHeight) ? record.bottomHeight : 220;
@@ -738,7 +739,6 @@ window.__ModuleLoader__.load({
 				tabs: [],
 				active: null
 			});
-			const bottomOpen = record.bottomOpen === true && allLeaves(bottomSplits).some((leaf) => leaf.tabs.length > 0);
 			const maxWidth = typeof window !== "undefined" ? window.innerWidth : Infinity;
 			return {
 				panelOpen: record.panelOpen,

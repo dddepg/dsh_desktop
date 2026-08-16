@@ -80,8 +80,8 @@ export interface SidebarState {
   bottomHeight: number
   /**
    * Whether the bottom panel has been expanded at least once in this
-   * session — the FIRST expansion tries to auto-open a terminal tab (gated
-   * on the bottomPanelAutoTerminal pref); later expansions never do.
+   * session. Personal branch: the first-expansion auto terminal is removed,
+   * so this flag no longer gates a terminal open.
    */
   bottomOpenedOnce: boolean
   /** The bottom panel's own split tree (panes/tabs live only in ONE tree;
@@ -824,8 +824,8 @@ export function sanitizeState(parsed: unknown): SidebarState | undefined {
     ? record.bottomHeight
     : BOTTOM_DEFAULT
   const bottomHeight = Math.min(bottomCap, Math.max(BOTTOM_MIN, Math.round(rawHeight)))
-  const bottomSplits = sanitizeNode(record.bottomSplits, seen, reid)
-    ?? { kind: 'leaf' as const, id: uid('pane'), tabs: [], active: null }
+  const bottomSplits = stripBottomTerminalTabs(sanitizeNode(record.bottomSplits, seen, reid)
+    ?? { kind: 'leaf' as const, id: uid('pane'), tabs: [], active: null })
   const maxWidth = typeof window !== 'undefined' ? window.innerWidth : Infinity
   return {
     panelOpen: record.panelOpen,
@@ -927,6 +927,28 @@ function sanitizeNode(node: unknown, seen: Set<string>, reid: Map<string, string
     return { kind: 'split', id: uniqueNodeId(record.id, seen, reid), dir: record.dir, sizes: record.sizes as number[], children }
   }
   return undefined
+}
+
+/** Personal branch: remove terminal tabs from the persisted bottom tree. */
+function stripBottomTerminalTabs(node: SplitNode | undefined): SplitNode | undefined {
+  if (node === undefined) return node
+  const visit = (n: SplitNode): void => {
+    if (n.kind === 'leaf') {
+      const tabs = n.tabs.filter(tab => tab.type !== 'terminal')
+      if (tabs.length !== n.tabs.length) {
+        n.tabs = tabs
+        if (n.active !== null && !tabs.some(tab => tab.id === n.active)) {
+          n.active = tabs.length > 0 ? tabs[0].id : null
+        }
+      }
+      return
+    }
+    if (n.kind === 'split') {
+      for (const child of n.children) visit(child)
+    }
+  }
+  visit(node)
+  return node
 }
 
 /** The session-scoped store: one state per conversation, localStorage-backed. */

@@ -48,9 +48,7 @@ export function parsePrefs(value: unknown): SidebarPrefs {
     agentTerminalTools: typeof record.agentTerminalTools === 'boolean'
       ? record.agentTerminalTools
       : SIDEBAR_PREFS_DEFAULTS.agentTerminalTools,
-    bottomPanelAutoTerminal: typeof record.bottomPanelAutoTerminal === 'boolean'
-      ? record.bottomPanelAutoTerminal
-      : SIDEBAR_PREFS_DEFAULTS.bottomPanelAutoTerminal,
+    bottomPanelAutoTerminal: false, // personal branch: force-disable persisted auto-terminal setting
     terminalFontFamily: typeof record.terminalFontFamily === 'string'
       ? record.terminalFontFamily
       : SIDEBAR_PREFS_DEFAULTS.terminalFontFamily,

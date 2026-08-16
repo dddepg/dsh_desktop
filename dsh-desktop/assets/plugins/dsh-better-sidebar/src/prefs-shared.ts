@@ -175,7 +175,7 @@ export const SIDEBAR_PREFS_DEFAULTS: SidebarPrefs = {
   autoOpenSubagent: true,
   autoOpenJobs: true,
   agentTerminalTools: false,
-  bottomPanelAutoTerminal: true,
+  bottomPanelAutoTerminal: false, // personal branch: no auto terminal in the bottom panel
   terminalFontFamily: '',
   terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
   interceptOpenPath: true,

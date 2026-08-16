@@ -59,7 +59,7 @@ const PrefsSchema = z.object({
 	autoOpenSubagent: z.boolean().default(true),
 	autoOpenJobs: z.boolean().default(true),
 	agentTerminalTools: z.boolean().default(false),
-	bottomPanelAutoTerminal: z.boolean().default(true),
+	bottomPanelAutoTerminal: z.boolean().default(false), // personal branch: no auto terminal in the bottom panel
 	terminalFontFamily: z.string().default(""),
 	terminalFontSize: z.number().step(1).min(9).max(32).default(13),
 	interceptOpenPath: z.boolean().default(true),

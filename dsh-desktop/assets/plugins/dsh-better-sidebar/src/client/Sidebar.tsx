@@ -437,33 +437,12 @@ export function Sidebar(props: { ctx: Context; store: SidebarStore }) {
   }, [measureCenter])
 
   /**
-   * Bottom-panel first-expansion auto terminal: the FIRST time the user
-   * expands the bottom panel in a session, try to open a fresh terminal tab
-   * there. "Try" is literal — the terminal's own quota and enable switch
-   * gate the attempt (a full quota or a disabled terminal type makes it a
-   * no-op). Gated on the bottomPanelAutoTerminal pref (the terminal tab's
-   * nested settings toggle, default on). Only a false→true TRANSITION fires
-   * (a panel persisted open never counts as an expansion), and the session's
-   * bottomOpenedOnce flag is set atomically with the first fire so later
-   * expansions never repeat it.
+   * Personal branch: the bottom-panel first-expansion auto terminal is
+   * removed. The panel stays available for other tabs; terminals can still
+   * be opened manually in the right sidebar.
    */
-  const bottomWasOpenRef = useRef<boolean | undefined>(undefined)
   useEffect(() => {
-    // The bottom panel does not exist on narrow viewports (the two
-    // workbenches merge into one panel), so the first-expansion auto
-    // terminal is a desktop-only behavior.
-    if (narrow) return
-    if (state === undefined) return
-    const wasOpen = bottomWasOpenRef.current
-    bottomWasOpenRef.current = state.bottomOpen
-    if (wasOpen === undefined || wasOpen || !state.bottomOpen) return
-    if (state.bottomOpenedOnce) return
-    if (store.getPrefs().bottomPanelAutoTerminal === false) return
-    if (ctx.betterSidebar?.isTabEnabled('terminal') === false) return
-    // Land the tab in the bottom panel's first pane; the once-flag is set
-    // atomically so later expansions never repeat the auto-open.
-    store.reduce(s => ({ ...s, activePane: firstLeaf(s.bottomSplits).id, bottomOpenedOnce: true }))
-    ctx.betterSidebar?.openTab({ type: 'terminal' })
+    return
   }, [state, store, ctx, narrow])
 
   // Panel drags: the right panel's width (left edge strip), the bottom

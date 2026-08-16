@@ -149,10 +149,6 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
           title: () => t('settingsToolsTitle'),
           desc: () => t('settingsToolsDesc'),
         }, {
-          key: 'bottomPanelAutoTerminal',
-          title: () => t('settingsBottomTerminalTitle'),
-          desc: () => t('settingsBottomTerminalDesc'),
-        }, {
           key: 'terminalFontFamily',
           type: 'text',
           title: () => t('settingsFontFamilyTitle'),

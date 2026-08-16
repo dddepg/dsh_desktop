@@ -56,6 +56,7 @@
 
 - 桌面端读取 `~/.dsh/.credentials.yaml` 的 `DEEPSEEK_API_KEY`（或环境变量），调用 `https://api.deepseek.com/user/balance`，每 15 分钟刷新，通过 preload 推送到 Web UI。
 - 配套 dsh 客户端插件（`assets/plugins/dsh-balance`）在每次启动时自动同步进 web profile 并注册到 `conversation.composer.dock`，在对话底部统计栏内联显示：**本轮 ¥X.XX · 余额 ¥Y.YY**（本轮费用按 token 用量 × 价格档估算，缓存命中/未命中/输出分别计价）。
+- **OpenCode Go 订阅额度**：同一小部件内追加显示 `Go 5h x% 周 x% 月 x%`——调用 `https://opencode.ai/zen/go/v1/usage` 读取 **5 小时滚动 / 每周 / 每月** 三个窗口的已用百分比与重置时间；密钥取自 `OPENCODE_GO_API_KEY`（环境变量或 `~/.dsh/.credentials.yaml`，回退 OpenCode CLI 的 `auth.json`），未配置时自动省略该段。
 - 价格档默认：deepseek-chat 2/0.5/8、deepseek-reasoner 与 deepseek-v4-pro 4/1/16（¥/百万 token）；可在 `<数据目录>\settings.json` 的 `balancePrices.<model>` 覆盖。代理/镜像可用 `DEEPSEEK_API_BASE` 或 `DEEPSEEK_BALANCE_URL` 环境变量。
 - 不需要余额提示时：chrome 栏 ⋯ 菜单 →「显示余额/本轮费用」取消勾选，整个 dock 会隐藏（第三方中转/非官方直连用户推荐关闭）。
 - 纯浏览器打开 Web UI 时无桌面壳推送，小部件只显示「本轮」费用。
@@ -108,6 +109,28 @@
 
 - [vlln/dsh-navbar](https://github.com/vlln/dsh-navbar)（MIT）内置：对话区右缘的节点串导航条——每 user 消息一个节点，悬停预览（6 行截断）、点击平滑跳转 + 品牌蓝高亮、连续悬停/滚轮切换、>11 节点自动滑动窗口、<2 条 user 消息自动隐藏；消息精选 pin（assistant 操作条 📌，精选轮次渲染为金色椭圆盘，状态按会话持久化）。实现 dsh-external/issues#144 规格，纯浏览器端 bundle（`assets/plugins/dsh-navbar`，含 LICENSE 与预编译 lib），启动时自动同步进 web profile。
 - **取代** `dsh-conversation-tweaks` 内置的会话右侧导航滑轨（dct-rail，已移除），对话区右缘导航由 dsh-navbar 统一提供；conversation-tweaks 保留「隐藏对话输出」能力。
+
+## 侧边临时会话（dsh-side-session）
+
+- [hzhz314159/dsh-side-session](https://github.com/hzhz314159/dsh-side-session)（MIT）内置：复刻 Codex 的「side session」——基于**当前主会话上下文**（对话记录 + agent 触及的文件）在独立浮窗里发起临时追问，答案只存在于临时会话，不写入主会话、不触发主会话工具。
+- 浮窗可拖拽/缩放，默认收起不遮挡主界面；点击左侧 footer 的 💬 图标或 `Ctrl+Shift+S` 唤起。
+- 三种回答引擎（互斥、持久化、即时切换）：复用 DSH 全局 Key / 插件自带 Key / 走宿主 LLM 服务（`ctx.llm`，不读任何 key）；流式输出，UI 与主界面同款设计令牌（深色/浅色自动跟随）。
+- 上下文自动捕获：服务端解析会话日志 `session.jsonl.zstd`（zstd 帧扫描，容忍事件模型变更），含截断护栏（transcript 120 条 / 40K 字符、文件 200 个）。
+- 以 bundle 形式随桌面端分发（`assets/plugins/dsh-side-session`，含 LICENSE 与 README），启动时自动同步进 web profile。
+
+## 主动上下文压缩（billion-context-dsh）
+
+- [Tyan66666/billion-context-dsh](https://github.com/Tyan66666/billion-context-dsh)（MIT）内置：**模型驱动的上下文压缩后端**（ACP，移植自 billion-context-pi，内核 acp-kernel 复用）——由模型决定何时压缩、压缩什么，替代自动摘要式压缩。
+- 给模型四个工具：`compress`（模型自写摘要遮蔽 seq 范围，**无第二次 LLM 调用**）/ `decompress`（从会话日志恢复原文）/ `search_context`（块内检索）/ `acp_status`（块账本与上下文压力）；另有 `/acp` 命令。
+- 自动策略只 nudge（`agent/pre-step` 注入建议，非强制）；原文保留在 append-only 日志，支持分层蒸馏（T2/T3）与重启后账本重建。
+- 以 bundle 形式随桌面端分发（`assets/plugins/billion-context-dsh`，含 dist 与私有依赖 acp-kernel），启动时自动同步进 web profile；已按官方建议在 profile patch 禁用 `compaction-basic`（同一 realm 仅保留一个压缩后端）。
+
+## 对话删除与归档管理（dsh-session-manager）
+
+- 内置配套插件（本仓库实现，MIT）：dsh 官方只有「归档」没有「删除」，本插件补齐两条入口：
+  - **会话行 ⋯ 菜单「删除对话」**（位于「归档会话」下方，所有会话行均显示）：确认后经宿主 RPC 删除该会话日志与附件（**正在运行**的会话会被拒绝），列表实时移除；
+  - **设置 →「归档对话管理」**：列出全部已归档对话（标题/项目/更新时间），每条提供「恢复」（回到原工作区与顺序）与「删除」。
+- 实现依赖 `scripts/patch-session-manage.js` 在启动/打包时对官方包做幂等补丁（`dsh-workspace` unarchiveSession、`dsh-host-apiproxy` unarchiveSession/deleteSession RPC、`dsh-client-connection` API 面与 schema、`dsh-client-ui-workspace` 菜单项）；状态更新走官方 host 帧，无需重启服务。
 
 ## 稳定性与兼容性（0.3.6）
 

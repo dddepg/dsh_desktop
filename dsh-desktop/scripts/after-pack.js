@@ -30,6 +30,7 @@ const { patchDshSessionVocabulary } = require('./patch-event-vocabulary');
 const { installBuiltinPresets } = require('./install-minimal-win-preset');
 const { patchWebSearchBaseUrl } = require('./patch-web-search-baseurl');
 const { patchMenuViewport } = require('./patch-menu-viewport');
+const { patchSessionManage } = require('./patch-session-manage');
 
 // Regexes for files that are safe to delete (pure metadata / dev artifacts).
 const DROP_BASENAME = /^(LICENSE.*|README.*|CHANGELOG.*|HISTORY.*|COPYING.*|NOTICE.*|AUTHORS.*|SECURITY.*|CONTRIBUTING.*|\.gitignore|\.npmignore|\.editorconfig|\.eslintrc.*|\.prettierrc.*|\.babelrc.*)$/i;
@@ -77,6 +78,23 @@ module.exports = async function afterPack(context) {
     console.warn('afterPack: vendor/npm missing — npm CLI will not be bundled');
   }
 
+  // electron-builder strips nested node_modules from assets/plugins during the
+  // file copy (same behavior as extraResources noted above). Restore vendored
+  // plugin deps verbatim so bundled plugins with private dependencies (e.g.
+  // billion-context-dsh's acp-kernel) resolve inside the packed app; the
+  // runtime profile sync then carries them into the web profile.
+  const pluginRoot = path.join(appOutDir, 'resources', 'app', 'assets', 'plugins');
+  if (fs.existsSync(pluginRoot)) {
+    for (const rel of fs.readdirSync(pluginRoot)) {
+      const srcNm = path.resolve(__dirname, '..', 'assets', 'plugins', rel, 'node_modules');
+      if (!fs.existsSync(srcNm)) continue;
+      const dstNm = path.join(pluginRoot, rel, 'node_modules');
+      fs.rmSync(dstNm, { recursive: true, force: true });
+      fs.cpSync(srcNm, dstNm, { recursive: true });
+      console.log(`afterPack: vendored plugin node_modules restored (${rel})`);
+    }
+  }
+
   // Prune redundant files from the packed app (resources/app/...) and the
   // bundled npm CLI (resources/npm/...). Runtime files are never removed.
   const targets = [
@@ -117,7 +135,11 @@ module.exports = async function afterPack(context) {
     // issue #36: Menu portal 列表视口封顶（预设很多时顶部条目被裁掉的修复）。
     const mvChanged = patchMenuViewport(appNm, (m) => console.log('afterPack: ' + m));
     console.log(`afterPack: menu viewport ${mvChanged > 0 ? 'patched' : 'already up to date'}`);
+    // 对话删除/归档管理：官方包运行时补丁（dsh-workspace / host-apiproxy /
+    // client-connection / client-ui-workspace）。
+    const smChanged = patchSessionManage(appNm, (m) => console.log('afterPack: ' + m));
+    console.log(`afterPack: session manage ${smChanged > 0 ? `patched (${smChanged} files)` : 'already up to date'}`);
   } else {
-    console.warn('afterPack: bundled app node_modules not found — web-search baseURL / menu viewport patch skipped');
+    console.warn('afterPack: bundled app node_modules not found — web-search baseURL / menu viewport / session manage patch skipped');
   }
 };

@@ -39,6 +39,7 @@ const COMPANION_PLUGINS = [
   { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
   { id: 'gitgraph', name: '@deepseek-ai/dsh-gitgraph' },
   { id: 'skin-switch', name: '@deepseek-ai/dsh-skin-switch' },
+  { id: 'effort-slider', name: 'dsh-client-ui-effort-slider' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
   { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
@@ -53,7 +54,7 @@ const COMPANION_PLUGINS = [
 
 const PLUGIN_FILES = [
   'package.json', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md',
-  'lib/index.js', 'lib/index.mjs', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
+  'index.js', 'lib/index.js', 'lib/index.mjs', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
   'dsh.plugin.json',
 ];
 

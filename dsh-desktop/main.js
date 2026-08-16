@@ -2846,7 +2846,7 @@ function syncCompanionPlugins() {
 
     const bundleNames = new Set();
     const copyFiles = [
-      'package.json', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md',
+      'package.json', 'cordis.patch.yml', 'LICENSE', 'LICENSE.chibi-runner', 'README.md', 'README.zh.md',
       'index.js', 'lib/index.js', 'lib/index.mjs', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
       'dsh.plugin.json',
     ];
@@ -3103,7 +3103,7 @@ function syncBuiltinAgentPresets() {
       log('boot', 'WSL 内 dsh 包未就绪，跳过内置 Agent 预设同步');
       return;
     }
-    const dests = installBuiltinPresets(dshPkgDir);
+    const dests = installBuiltinPresets(dshPkgDir, home);
     log('boot', '已同步 ' + dests.length + ' 个内置 Agent 预设到 WSL dsh: ' + dests.map((d) => path.basename(d)).join(', '));
   } catch (err) {
     log('boot', '同步内置 Agent 预设到 WSL 失败: ' + err.message);
@@ -3129,7 +3129,7 @@ function syncLocalAgentPresets() {
       log('boot', '未找到生效的 dsh 包，跳过内置 Agent 预设同步');
       return;
     }
-    const dests = installBuiltinPresets(active);
+    const dests = installBuiltinPresets(active, effectiveDshHome());
     log('boot', '已同步 ' + dests.length + ' 个内置 Agent 预设到 ' + (updater.overlayVersion(updCtx()) ? 'agent overlay' : '内置 dsh 包') + ': ' + dests.map((d) => path.basename(d)).join(', '));
   } catch (err) {
     log('boot', '同步内置 Agent 预设失败: ' + err.message);

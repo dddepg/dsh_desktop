@@ -8,9 +8,11 @@ DeepSeek Harness（dsh）的 Windows 桌面客户端：内置独立 Node 运行�
 ## [Unreleased]
 
 ### 新增
+- **内置 Router J-Space (experimental) agent 预设（DreamRift/dsh-router-jspace，MIT + 上游 Apache-2.0/MIT/BSD-3-Clause）**：路由套件外部路由（spec/react/weak）+ J-Space fast/full/loop 认知协议 + oh-we-need V4 思考风格，自带 `j-space` / `oh-we-need` 两个 skill。预设安装脚本升级为**整树递归复制**（`skills/`、`scripts/` 等子目录随预设进 dsh 包），并新增**随装 skills**：预设自带 `skills/<name>` 自动装入 `$DSH_HOME/skills/`（已存在不覆盖，与上游 install.ps1 语义一致；`dsh-skill-filesystem` 热发现，无需重启）。`main.js` 与 `sync-companion-plugins.js` 同步传入 DSH_HOME 落 skills；cli 直接运行也支持 `node scripts/install-minimal-win-preset.js [DSH_HOME]`
 - **设置页「插件」页融合为单一「管理」标签（`dsh-plugin-manager`）**：启动时幂等隐藏官方只读「全部」清单（`applyPluginInventoryTabMergeFix` 过滤 `settings.plugins.tab` 中 id 为 `all` 的条目），管理标签成为唯一插件入口——**搜索框**（按名称/包名/描述过滤）+ **可点击分类标签**（配套插件可开关 / 其他插件可开关 / 核心组件只读，点击过滤、再点取消，各组显示启用/关闭计数）+ **双视图**（简洁：名称+包名+开关 / 详情：+状态徽章+中文描述）+ 全量 live 清单与本地清单融合（描述取自各插件 package.json）+ **乐观 UI 开关**（点击立即翻转勾选框并标记「重启后生效」，写盘失败自动回滚）。关闭/重新打开写入 web profile `cordis.patch.yml` 的用户层 `disabled` 条目（与 `llm-deepseek` 同款覆盖机制，同一 id 只保留一处，避免 loader 双登记崩溃），完全退出并重启 DSH Desktop 生效。解决「插件看不懂作用、默认启用无法关闭」的社区反馈
 
 ### 修复
+- **推理滑块 chibi 形象许可文件随包同步**：`dsh-client-ui-effort-slider` 合并 HanaAyane chibi runner 形象后，`LICENSE.chibi-runner` 不在 `main.js` / `sync-companion-plugins.js` 的插件文件复制清单里，profile 副本缺该许可文件。已补入两份清单，重新同步后 profile 副本与仓库逐字节一致
 - **侧边临时会话大日志解析风暴 → 聊天响应偶发延迟**（dsh-side-session v0.2.4）：面板展开时每 2s 轮询会对整个会话日志做全量 zstd 解压+逐行解析（实测 7MB 压缩 ≈ 20MB 文本 ≈ **600ms 同步阻塞**），会话进行中 mtime 持续变化导致反复全量解析，与聊天请求同进程排队。改为**增量解析**（只解自上次帧边界以来的新帧并累计，结果与全量解析逐字节等价；文件整体替换自动回退全量）+ 客户端**全量拉取 4s 节流**（切换会话立即拉取）。新增 6 个增量/全量等价性单测
 - **侧边临时会话升级 v0.2.5（合入上游更新）**：左侧栏图标对齐、浮窗展开/收起动画档位（0/300/500/800/1200ms，默认 500）、输入框与发送按钮样式与主会话同款、移除「停止回答」按钮；服务端**热重载自愈**（`settings.registrations.delete(NS)` + 路由重注册，开发热重载后不再残留重复注册）。保留本地增量解析与 4s 拉取节流。版本号定为 0.2.5 与上游 0.2.4 区分
 - **桌面宠物默认关闭（插件级）**：harness-pet 常驻 canvas 逐帧绘制在软渲染/流式输出下持续占用主进程，且旧版保存的开关值会覆盖客户端默认关闭。现启动同步时幂等写入 profile patch `- id: harness-pet\n  disabled: true`（一票否决任何已保存状态），需要时在 设置 → 插件 → 管理 一键开启

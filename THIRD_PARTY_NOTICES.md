@@ -86,6 +86,7 @@
 | `anchored-standard` | 首轮锚定 + 工具延迟展开 | MIT | https://github.com/xiaobright/dsh-anchored-standard |
 | `zero-anchored-standard` | 零工具锚定轮 + 后续展开 | MIT | https://github.com/xiaobright/dsh-anchored-standard |
 | `v4-flash-godmode-opencode-go` | opencode-go V4 Flash 引导（神模式） | MIT | https://github.com/SheberDavid/v4-flash-godmode-opencode-go |
+| `router-jspace` | 外部路由 + J-Space 认知协议 + oh-we-need 思考风格（实验性） | MIT（整合代码）；上游组件 Apache-2.0 / MIT / BSD-3-Clause（详见预设目录 NOTICE.md 与 LICENSES/） | https://github.com/DreamRift/dsh-router-jspace |
 | `warmupbetter` | 首轮真实模型长 COT 热身 | MIT | https://github.com/0liveiraaa/myDshPresets |
 | `warmupbetter-replay` | 首轮重放预录 COT | MIT | https://github.com/0liveiraaa/myDshPresets |
 

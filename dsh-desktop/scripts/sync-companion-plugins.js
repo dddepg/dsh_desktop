@@ -69,7 +69,7 @@ function scanCompanionPlugins() {
 }
 
 const PLUGIN_FILES = [
-  'package.json', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md',
+  'package.json', 'cordis.patch.yml', 'LICENSE', 'LICENSE.chibi-runner', 'README.md', 'README.zh.md',
   'index.js', 'lib/index.js', 'lib/index.mjs', 'lib/client.js', 'lib/vlm.js', 'lib/typert.host.js', 'lib/typert.host.d.ts',
   'dsh.plugin.json',
 ];
@@ -175,11 +175,11 @@ function syncBuiltinPresets(home, dshPackageArg, dryRun) {
     return;
   }
   if (dryRun) {
-    log(`dry-run: 将同步内置 Agent 预设（assets/agent-presets）→ ${path.join(dshPkgDir, 'config', 'agent-presets')}`);
+    log(`dry-run: 将同步内置 Agent 预设（assets/agent-presets）→ ${path.join(dshPkgDir, 'config', 'agent-presets')}（含预设自带 skills → ${path.join(home, 'skills')}）`);
     return;
   }
   try {
-    const dests = installBuiltinPresets(dshPkgDir);
+    const dests = installBuiltinPresets(dshPkgDir, home);
     log(`已同步 ${dests.length} 个内置 Agent 预设 → ${dshPkgDir}: ${dests.map((d) => path.basename(d)).join(', ')}`);
   } catch (err) {
     warn('内置 Agent 预设同步失败: ' + (err && err.message ? err.message : err));

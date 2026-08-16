@@ -13,6 +13,11 @@
 //   anchored-standard              -> 官pro
 //   v4-flash-godmode-opencode-go   -> goflash
 //   router-standard                -> router-standard
+//   router-jspace                  -> Router J-Space (experimental)
+//
+// 预设目录整树复制（可带子目录，如 router-jspace 的 skills/ 与 scripts/）；
+// 若预设自带 skills/<name> 子目录，还会随装到 <dshHome>/skills/<name>
+// （与上游 install.ps1 一致：已存在的同名 skill 不覆盖）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -37,6 +42,21 @@ function fileMatches(sf, df) {
   }
 }
 
+/** 递归同步一棵目录树：文件大小+mtime 一致则跳过写盘（cpSync 保留时间戳）。 */
+function syncTree(src, dest) {
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const sf = path.join(src, entry.name);
+    const df = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(df, { recursive: true });
+      syncTree(sf, df);
+    } else if (entry.isFile()) {
+      if (fileMatches(sf, df)) continue; // 已一致：跳过写盘
+      fs.cpSync(sf, df, { force: true, preserveTimestamps: true });
+    }
+  }
+}
+
 /** Copy one bundled preset directory into <dshPackageDir>/config/agent-presets/. */
 function installBuiltinPreset(dshPackageDir, id) {
   const src = path.join(presetsSourceDir(), id);
@@ -47,15 +67,9 @@ function installBuiltinPreset(dshPackageDir, id) {
   }
   const dest = path.join(dshPackageDir, 'config', 'agent-presets', id);
   fs.mkdirSync(dest, { recursive: true });
-  // Full-directory copy: presets may carry local .mjs bootstrap modules
-  // referenced relatively from agent.cordis.yml.
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const sf = path.join(src, entry.name);
-    const df = path.join(dest, entry.name);
-    if (fileMatches(sf, df)) continue; // 已一致：跳过写盘
-    fs.cpSync(sf, df, { force: true, preserveTimestamps: true });
-  }
+  // 整树复制：预设可携带本地 .mjs bootstrap 模块（相对路径引用）以及
+  // skills/、scripts/ 等子目录，全部随预设进包。
+  syncTree(src, dest);
   return dest;
 }
 
@@ -72,8 +86,51 @@ const RETIRED_BUILTIN_PRESET_DIRS = [
   SHARED_PRESET_DIR,
 ];
 
+/**
+ * 从 dsh 包目录反推 DSH_HOME（<DSH_HOME>/agent/node_modules/@deepseek-ai/dsh
+ * 布局）。布局不符（如打包后内置在应用目录里的包）返回 undefined，
+ * 由调用方显式传入 DSH_HOME。
+ */
+function resolveDshHomeFromPackage(dshPackageDir) {
+  const scopeDir = path.dirname(dshPackageDir);   // @deepseek-ai
+  const modulesDir = path.dirname(scopeDir);      // node_modules
+  const agentDir = path.dirname(modulesDir);      // agent
+  if (path.basename(modulesDir) === 'node_modules' && path.basename(agentDir) === 'agent') {
+    return path.dirname(agentDir);
+  }
+  return undefined;
+}
+
+/**
+ * 把各预设自带的 skills/<name> 子目录随装到 <dshHome>/skills/<name>。
+ * 目标已存在（用户已有本地版本）则跳过，与上游 install.ps1 语义一致。
+ * @returns 本次新安装的 skill 数。
+ */
+function installBuiltinPresetSkills(dshPackageDir, dshHome) {
+  if (!dshHome) return 0;
+  const presetRoot = presetsSourceDir();
+  const skillsDest = path.join(dshHome, 'skills');
+  let installed = 0;
+  for (const entry of fs.readdirSync(presetRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === SHARED_PRESET_DIR) continue;
+    const skillsSrc = path.join(presetRoot, entry.name, 'skills');
+    if (!fs.existsSync(skillsSrc)) continue;
+    for (const skill of fs.readdirSync(skillsSrc, { withFileTypes: true })) {
+      if (!skill.isDirectory()) continue;
+      const df = path.join(skillsDest, skill.name);
+      if (fs.existsSync(df)) continue; // 已有用户版本：不覆盖
+      fs.mkdirSync(skillsDest, { recursive: true });
+      fs.cpSync(path.join(skillsSrc, skill.name), df, {
+        recursive: true, force: true, preserveTimestamps: true,
+      });
+      installed += 1;
+    }
+  }
+  return installed;
+}
+
 /** Install all bundled presets. Returns the destination directories. */
-function installBuiltinPresets(dshPackageDir) {
+function installBuiltinPresets(dshPackageDir, dshHome) {
   const presetRoot = presetsSourceDir();
   const destRoot = path.join(dshPackageDir, 'config', 'agent-presets');
   for (const id of RETIRED_BUILTIN_PRESET_DIRS) {
@@ -91,13 +148,13 @@ function installBuiltinPresets(dshPackageDir) {
   if (fs.existsSync(sharedSrc)) {
     const sharedDest = path.join(dshPackageDir, 'config', 'agent-presets', SHARED_PRESET_DIR);
     fs.mkdirSync(sharedDest, { recursive: true });
-    for (const entry of fs.readdirSync(sharedSrc, { withFileTypes: true })) {
-      if (!entry.isFile()) continue;
-      const sf = path.join(sharedSrc, entry.name);
-      const df = path.join(sharedDest, entry.name);
-      if (fileMatches(sf, df)) continue; // 已一致：跳过写盘
-      fs.cpSync(sf, df, { force: true, preserveTimestamps: true });
-    }
+    syncTree(sharedSrc, sharedDest);
+  }
+
+  // 随预设分发的 skills（router-jspace 的 j-space / oh-we-need）。
+  const skills = installBuiltinPresetSkills(dshPackageDir, dshHome || resolveDshHomeFromPackage(dshPackageDir));
+  if (skills > 0) {
+    console.log(`builtin preset skills installed (${skills}) → ${path.join(dshHome || resolveDshHomeFromPackage(dshPackageDir), 'skills')}`);
   }
   return dests;
 }
@@ -117,13 +174,17 @@ module.exports = {
   installMinimalWinPreset,
   installBuiltinPreset,
   installBuiltinPresets,
+  installBuiltinPresetSkills,
+  resolveDshHomeFromPackage,
   installedDshPackageDir,
   PRESET_ID: 'anchored-standard',
 };
 
 if (require.main === module) {
   try {
-    const dests = installBuiltinPresets(installedDshPackageDir());
+    const pkgDir = installedDshPackageDir();
+    const dshHome = process.argv[2] || resolveDshHomeFromPackage(pkgDir);
+    const dests = installBuiltinPresets(pkgDir, dshHome);
     console.log(`builtin presets installed (${dests.length}): ${dests.join(', ')}`);
   } catch (err) {
     console.error(`builtin preset install failed: ${(err && err.message) || err}`);

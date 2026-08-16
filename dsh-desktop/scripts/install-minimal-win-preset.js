@@ -43,9 +43,23 @@ function installBuiltinPreset(dshPackageDir, id) {
 /** Shared-module directory inside the preset root (not a preset slot). */
 const SHARED_PRESET_DIR = '_preset';
 
+/** Presets shipped by older DSH Desktop builds but removed from this branch. */
+const RETIRED_BUILTIN_PRESET_DIRS = [
+  'minimal-win',
+  'zero-anchored-standard',
+  'whoami-standard',
+  'warmupbetter',
+  'warmupbetter-replay',
+  SHARED_PRESET_DIR,
+];
+
 /** Install all bundled presets. Returns the destination directories. */
 function installBuiltinPresets(dshPackageDir) {
   const presetRoot = presetsSourceDir();
+  const destRoot = path.join(dshPackageDir, 'config', 'agent-presets');
+  for (const id of RETIRED_BUILTIN_PRESET_DIRS) {
+    fs.rmSync(path.join(destRoot, id), { recursive: true, force: true });
+  }
   const ids = fs.readdirSync(presetRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && entry.name !== SHARED_PRESET_DIR)
     .map((entry) => entry.name)

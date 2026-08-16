@@ -5,7 +5,7 @@
 // 预设（assets/agent-presets）同步进能找到的 dsh 包 config/agent-presets，
 // 避免 WSL / Linux 里的 dsh 模式列表比 Windows 内置 dsh 少。典型用途：把自己
 // WSL / Linux 里另装的 dsh（checkout 开发版或 npm 版）也配上壳自带的插件
-// （余额、文件改动视图、浮窗、插件市场、自定义提示词、第三方思考、识图等）。
+// （余额、文件改动视图、终端、浮窗、插件市场、自定义提示词、第三方思考、识图等）。
 //
 // 用法（WSL / Linux / Windows 均可执行）：
 //   node scripts/sync-companion-plugins.js [DSH_HOME] [--with-patches] [--dry-run] [--dsh-package <目录>]
@@ -36,6 +36,7 @@ const COMPANION_PLUGINS = [
   { id: 'balance', name: '@deepseek-ai/dsh-balance' },
   { id: 'file-changes', name: '@deepseek-ai/dsh-file-changes' },
   { id: 'client-file-changes', name: '@deepseek-ai/dsh-client-file-changes' },
+  { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
   { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
@@ -264,14 +265,6 @@ function syncPlugins(home, dryRun) {
     else patch = patch.replace(/\s*$/, '\n') + block;
     changed = true;
     log(`已添加补丁条目 ${p.id} → ${p.name}`);
-  }
-  // 已退役的会话内终端条目清理（个人分支移除 dsh-terminal-tab；幂等）。
-  let terminalBefore = patch;
-  patch = patch.replace(/^\s*-\s*insert:\s*$\n^\s*-\s*id:\s*terminal\s*$\n^\s*name:\s*['"]@deepseek-ai\/dsh-terminal-tab['"]\s*$\n?/gm, '');
-  patch = patch.replace(/^\s*-\s*insert:\s*$\n^\s*-\s*id:\s*terminal\s*$\n^\s*name:\s*['"]@deepseek-ai\/dsh-terminal['"]\s*$\n?/gm, '');
-  if (patch !== terminalBefore) {
-    changed = true;
-    log('已从 cordis.patch.yml 移除会话内终端条目');
   }
   // 旧插件市场条目清理（幂等）。
   const patchBefore = patch;

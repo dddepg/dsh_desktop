@@ -2218,6 +2218,7 @@ const COMPANION_PLUGINS = [
   { id: 'balance', name: '@deepseek-ai/dsh-balance' },
   { id: 'file-changes', name: '@deepseek-ai/dsh-file-changes' },
   { id: 'client-file-changes', name: '@deepseek-ai/dsh-client-file-changes' },
+  { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
   { id: 'harness-pet', name: 'harness-pet' },
@@ -2277,24 +2278,6 @@ function removeLegacyMarketplace(profileWebModules, profileDir) {
     if (patch !== before) {
       fs.writeFileSync(patchFile, patch);
       log('boot', '已从 cordis.patch.yml 移除旧插件市场条目');
-    }
-  } catch {}
-}
-
-function removeRetiredTerminal(profileDir) {
-  // 个人分支：移除与 对话/轨迹/文件 并列的「终端」标签页插件。
-  // removeStaleCompanionPlugins 已按 COMPANION_PLUGINS 清理包目录，这里把
-  // 已写入 cordis.patch.yml 的 insert 条目一并移除（兼容更名前的旧包名），
-  // 否则 dsh 启动时仍会按残留条目解析该插件。
-  const patchFile = path.join(profileDir, 'cordis.patch.yml');
-  try {
-    let patch = fs.readFileSync(patchFile, 'utf8');
-    const before = patch;
-    patch = patch.replace(/^\s*-\s*insert:\s*$\n^\s*-\s*id:\s*terminal\s*$\n^\s*name:\s*['"]@deepseek-ai\/dsh-terminal-tab['"]\s*$\n?/gm, '');
-    patch = patch.replace(/^\s*-\s*insert:\s*$\n^\s*-\s*id:\s*terminal\s*$\n^\s*name:\s*['"]@deepseek-ai\/dsh-terminal['"]\s*$\n?/gm, '');
-    if (patch !== before) {
-      fs.writeFileSync(patchFile, patch);
-      log('boot', '已从 cordis.patch.yml 移除会话内终端条目');
     }
   } catch {}
 }
@@ -2380,7 +2363,6 @@ function syncCompanionPlugins() {
     const expectedDirs = new Set(COMPANION_PLUGINS.map(companionDirName));
     removeStaleCompanionPlugins(profileModules, expectedDirs);
     removeLegacyMarketplace(path.join(profileDir, 'node_modules'), profileDir);
-    removeRetiredTerminal(profileDir);
 
     const bundleNames = new Set();
     const copyFiles = [
@@ -2479,9 +2461,10 @@ function syncCompanionPlugins() {
     let changed = false;
     for (const p of COMPANION_PLUGINS) {
       if (bundleNames.has(p.name)) continue;
-      // 该 id 在 patch 里已存在：若它现在的 name 与当前版本不一致（历史包改名），
-      // 就地改名为当前值。否则旧名残留可能重复注册路由、或加载到已不属于
-      // 本版本的包。只改 name 行，不动用户自己加的其它行。
+      // 该 id 在 patch 里已存在：若它现在的 name 与当前版本不一致（例如终端
+      // 包改名 @deepseek-ai/dsh-terminal → dsh-terminal-tab），就地改名为当前
+      // 值。否则旧名残留会让配套插件与 agent 内置终端重复注册路由、或加载
+      // 到已不属于本版本的包。只改 name 行，不动用户自己加的其它行。
       const idNameRe = new RegExp('(id:\\s*' + p.id + '\\b[^\\n]*\\n\\s*name:\\s*\\x27)([^\\x27]*)(\\x27)');
       const m = patch.match(idNameRe);
       if (m) {

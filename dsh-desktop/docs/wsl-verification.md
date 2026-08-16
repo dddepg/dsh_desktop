@@ -55,8 +55,8 @@
 
 ### 2.4 数据面与插件（wsl 模式）
 
-- [ ] WSL 内 `cat ~/.dsh-desktop/profiles/web/cordis.patch.yml` → 9 条 `- insert:`（余额/文件/浮窗/提示词/思考/识图/WSL 设置等）；
-- [ ] UI 中：对话底部余额小部件、详情面板「文件」标签页（diff 查看）、会话浮窗、插件市场、设置页「自定义提示词」可用；个人分支已移除会话内「终端」标签页；
+- [ ] WSL 内 `cat ~/.dsh-desktop/profiles/web/cordis.patch.yml` → 11 条 `- insert:`（余额/文件/终端/浮窗/插件市场/提示词/思考/识图/WSL 设置等）；
+- [ ] UI 中：对话底部余额小部件、详情面板「文件」标签页（diff 查看）、「终端」标签页（WSL 内走 `sh -i`，执行 `pwd` 应显示 WSL 路径）、会话浮窗、插件市场、设置页「自定义提示词」可用；
 - [ ] WSL 内目录布局正确：`agent/` `agent-prev/`（更新后）`agent-staging/`（仅安装期间）`profiles/` `sessions/` `dsh.pid`；
 - [ ] WSL 内 `ls ~/.dsh-desktop/agent/node_modules/@deepseek-ai/dsh/config/agent-presets` → 除 npm 包自带的 code/cordis/minimal/standard 外，还有 `minimal-win` / `router-standard` / `anchored-standard` 等 8 个壳内置预设与 `_preset` 共享模块；UI 的模式列表与 local 一致；
 - [ ] 会话完成 → Windows Toast 通知弹出（经 UNC 读 WSL 会话日志）；
@@ -93,7 +93,7 @@ node dsh-desktop/scripts/sync-companion-plugins.js ~/.dsh --with-patches
 - [x] `wsl.exe` 参数模式（`-e sh -lc` 单词传参）与 UTF-16 发行版列表解析；
 - [x] bootstrap：WSL 内 `npm install @deepseek-ai/dsh` 530 包 ~2 分钟、无原生编译错误；
 - [x] 启动：URL 就绪行解析、全新 home 首次启动持续 200、重启启动稳定；
-- [x] 插件：首次启动即加载（提示词/思考初始化日志 + 文件路由 400 已挂载）、`/plugins/@deepseek-ai/dsh-wsl-settings/client.js` bundle 构建发布 200；
+- [x] 插件：首次启动即加载（提示词/思考初始化日志 + 文件/终端路由 400 已挂载）、`/plugins/@deepseek-ai/dsh-wsl-settings/client.js` bundle 构建发布 200；
 - [x] 清理：pid 文件 SIGTERM → 退出码 0、pid 文件删除；
 - [x] 补丁：首次启动后 `--with-patches` 幂等应用；
 - [x] 全部 JS 语法检查（main/preload/wsl-backend/sync/插件 client+host）。

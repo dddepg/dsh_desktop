@@ -10,20 +10,9 @@
 //
 // Preset directory ids must match [a-z0-9-]+ (the user-facing name lives in
 // each preset.yml). Current set:
-//   minimal-win                    -> 极简模式_win
-//   router-standard                -> Router Standard (experimental)
-//   anchored-standard              -> Anchored Standard (experimental)
-//   zero-anchored-standard         -> Zero-Anchored Standard (experimental)
-//   whoami-standard                -> Whoami Standard (experimental)
-//   v4-flash-godmode-opencode-go   -> Router Flash (opencode-go)
-//   warmupbetter                   -> Warmup Better
-//   warmupbetter-replay            -> Warmup Better Replay
-//
-// `_preset` is NOT a preset slot: it is the shared module directory that
-// zero-anchored-standard and whoami-standard reference via `../_preset/*.mjs`.
-// It starts with an underscore so preset discovery (PRESET_ID ^[a-z0-9][a-z0-9-]*$)
-// skips it instead of reporting a broken roster row, and this script copies it
-// alongside the preset slots without treating it as one.
+//   anchored-standard              -> 官pro
+//   v4-flash-godmode-opencode-go   -> goflash
+//   router-standard                -> router-standard
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -63,9 +52,8 @@ function installBuiltinPresets(dshPackageDir) {
     .sort();
   const dests = ids.map((id) => installBuiltinPreset(dshPackageDir, id));
 
-  // Copy the shared `_preset` modules referenced by zero/whoami rows and
-  // imports (`../_preset/*.mjs`). It is deliberately not installed as a preset
-  // slot: discovery would otherwise report it as a broken roster row.
+  // `_preset` was removed with the zero/whoami presets; this block is kept as
+  // a no-op so future presets can reintroduce a shared module directory.
   const sharedSrc = path.join(presetRoot, SHARED_PRESET_DIR);
   if (fs.existsSync(sharedSrc)) {
     const sharedDest = path.join(dshPackageDir, 'config', 'agent-presets', SHARED_PRESET_DIR);
@@ -78,9 +66,9 @@ function installBuiltinPresets(dshPackageDir) {
   return dests;
 }
 
-/** Backward-compatible wrapper used by after-pack and older callers. */
+/** Backward-compatible wrapper (legacy name retained for older callers). */
 function installMinimalWinPreset(dshPackageDir) {
-  return installBuiltinPreset(dshPackageDir, 'minimal-win');
+  return installBuiltinPreset(dshPackageDir, 'anchored-standard');
 }
 
 /** Resolve the locally installed @deepseek-ai/dsh package directory. */
@@ -94,7 +82,7 @@ module.exports = {
   installBuiltinPreset,
   installBuiltinPresets,
   installedDshPackageDir,
-  PRESET_ID: 'minimal-win',
+  PRESET_ID: 'anchored-standard',
 };
 
 if (require.main === module) {

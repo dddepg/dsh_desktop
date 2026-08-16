@@ -428,16 +428,131 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 
+		let activeCtx = null;
+
+		function sidebarService() {
+			const ctx = activeCtx;
+			if (!ctx) return null;
+			try {
+				if (ctx.betterSidebar && typeof ctx.betterSidebar.getSnapshot === "function") return ctx.betterSidebar;
+				if (typeof ctx.get === "function") {
+					const service = ctx.get("betterSidebar");
+					if (service && typeof service.getSnapshot === "function") return service;
+				}
+			} catch {}
+			return null;
+		}
+
+		const PTY_CHUNK_URL = "/sidebar/bundle/terminal.js";
+		const PTY_PREFS_FALLBACK = { terminalFontFamily: "", terminalFontSize: 13 };
+		let ptyTerminalLoad = null;
+
+		function loadPtyTerminal() {
+			if (ptyTerminalLoad) return ptyTerminalLoad;
+			ptyTerminalLoad = new Promise((resolve, reject) => {
+				const g = globalThis;
+				g.__dshChunks__ = g.__dshChunks__ || {};
+				const materialize = () => {
+					const factory = g.__dshChunks__["terminal"];
+					if (typeof factory !== "function") {
+						reject(new Error("terminal chunk did not register"));
+						return;
+					}
+					try {
+						const mod = factory(require);
+						if (!mod || typeof mod.TerminalView !== "function") throw new Error("terminal chunk has no TerminalView");
+						resolve(mod.TerminalView);
+					} catch (err) {
+						reject(err);
+					}
+				};
+				if (typeof g.__dshChunks__["terminal"] === "function") {
+					materialize();
+					return;
+				}
+				const el = document.createElement("script");
+				el.async = true;
+				el.src = PTY_CHUNK_URL;
+				el.onload = () => { el.remove(); materialize(); };
+				el.onerror = () => { el.remove(); reject(new Error("failed to load " + PTY_CHUNK_URL)); };
+				document.head.appendChild(el);
+			});
+			return ptyTerminalLoad;
+		}
+
+		function ptyStore() {
+			const service = sidebarService();
+			return {
+				getPrefs() {
+					try {
+						const prefs = service && typeof service.getSnapshot === "function" ? service.getSnapshot().prefs : null;
+						return prefs && typeof prefs === "object" ? prefs : PTY_PREFS_FALLBACK;
+					} catch { return PTY_PREFS_FALLBACK; }
+				},
+				subscribe(listener) {
+					if (service && typeof service.subscribeState === "function") return service.subscribeState(listener);
+					return () => {};
+				},
+				tabOpen() { return true; }
+			};
+		}
+
+		function PtyTerminalView(props) {
+			const sessionId = props.sessionId || "";
+			const [cwd, setCwd] = react.useState("");
+			const [cwdResolved, setCwdResolved] = react.useState(false);
+			const [PtyView, setPtyView] = react.useState(null);
+			const [error, setError] = react.useState("");
+			const store = react.useMemo(() => ptyStore(), []);
+			react.useEffect(() => {
+				let alive = true;
+				setCwd("");
+				setCwdResolved(false);
+				if (!sessionId) {
+					setCwdResolved(true);
+					return;
+				}
+				fetch("/api/dsh-files/session-cwd?sessionId=" + encodeURIComponent(sessionId))
+					.then((r) => r.json())
+					.then((j) => { if (alive && j && typeof j.cwd === "string") setCwd(j.cwd); })
+					.catch(() => {})
+					.finally(() => { if (alive) setCwdResolved(true); });
+				return () => { alive = false; };
+			}, [sessionId]);
+			react.useEffect(() => {
+				let alive = true;
+				setError("");
+				loadPtyTerminal()
+					.then((view) => { if (alive) setPtyView(() => view); })
+					.catch((err) => { if (alive) setError((err && err.message) ? err.message : String(err)); });
+				return () => { alive = false; };
+			}, []);
+			if (error) {
+				return react.createElement("div", { className: "dsh-term-root" },
+					react.createElement("div", { className: "dsh-term-hint" }, "无法加载真实终端：" + error));
+			}
+			if (!PtyView || !cwdResolved) {
+				return react.createElement("div", { className: "dsh-term-root" },
+					react.createElement("div", { className: "dsh-term-hint" }, "正在启动终端…"));
+			}
+			return react.createElement(PtyView, {
+				scope: { sessionId, cwd },
+				tabId: "conversation-terminal:" + sessionId,
+				store
+			});
+		}
+
 		const inject = ["slots"];
 
 		function apply(ctx) {
 			ensureCss();
+			activeCtx = ctx;
 			ctx.slots.inject("conversation.view", () => ctx.slots.register({
 				name: "conversation.view",
 				id: "terminal",
 				order: 30,
 				label: () => "终端"
-			}, TerminalView), "dsh-terminal: conversation view entry");
+			}, PtyTerminalView), "dsh-terminal: conversation view entry (better-sidebar pty)");
 		}
 
 		exports.apply = apply;

@@ -1,2 +1,2 @@
-name: Router Standard (experimental)
+name: router-standard
 description: Task-aware routing — spec (plan-first) for fixes, react (doer) for builds; full Standard tools after the first tool call.

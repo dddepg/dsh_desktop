@@ -125,10 +125,8 @@
  - **渲染进程崩溃自动恢复**：`render-process-gone` 后指数退避重载（0.8s 起步，封顶 15s），连续失败第 3 次重建 BrowserWindow（保持隐藏/托盘状态）；超过上限显示本地恢复页（重新加载 / 重启客户端 / 打开日志）并通知；稳定存活 30s 才清零计数
 - **渲染心跳与假死恢复**：preload 每 5 秒上报心跳，主进程 30 秒未收到则恢复；`unresponsive` 15 秒后同样恢复。
 - **会话历史兼容**：打包时 `afterPack` 自动修补内置 `@deepseek-ai/dsh-session` 事件词汇表，接受 dsh-agent-teams / dsh-message-edit / dsh-web-search-exa 的事件，修复 `SessionFormatUnsupportedError`。
-- **内置 Agent 预设（8 个）**：`minimal-win`、`router-standard`、`anchored-standard`、`zero-anchored-standard`、`whoami-standard`、`v4-flash-godmode-opencode-go`、`warmupbetter`、`warmupbetter-replay`，打包时自动写入内置 dsh CLI；详细来源与许可见 [docs/agent-presets.md](docs/agent-presets.md)。
-- **dsh-routing-suite**：`router-standard`（官方 API flash 方案）与 `dsh-super-injector` 的 `dev_*` 注入/热重载/自愈工具一并内置。
-- **dsh-anchored-standard**：`anchored-standard` / `zero-anchored-standard` / `whoami-standard`（官方 API pro 方案）三个实验性预设一并内置。
-- **opencode-go 预设**：`v4-flash-godmode-opencode-go`（flash）与 `warmupbetter` / `warmupbetter-replay`（pro）内置。
+- **内置 M3 皮肤**：Material Design 3（Material You）主题已集成进 preload，设置 → 外观 增加 M3 皮肤按钮；本个人分支首次启动默认启用，可手动关闭，偏好持久化。
+- **内置 Agent 预设（3 个）**：`anchored-standard`（显示名「官pro」）、`v4-flash-godmode-opencode-go`（显示名「goflash」）、`router-standard`（显示名「router-standard」），打包时自动写入内置 dsh CLI；详细来源与许可见 [docs/agent-presets.md](docs/agent-presets.md)。
 
 
 
@@ -234,7 +232,7 @@ npm run dist                   # 构建 portable + NSIS 安装包，输出到 di
 node dsh-desktop/scripts/sync-companion-plugins.js ~/.dsh --with-patches
 ```
 
-（`--dry-run` 可先预览；`--with-patches` 额外应用「会话列表闪跳修复 + 设置暴露白名单」两个运行时补丁，否则自定义提示词/第三方思考的设置页可能显示「设置不可用」。脚本同时会把壳内置的 8 个 Agent 预设同步进能找到的 dsh 包 `config/agent-presets`——`<DSH_HOME>/agent`（如 WSL 托管布局的 `~/.dsh-desktop/agent`）与 PATH 上的 dsh 命令会自动探测，其它安装位置可用 `--dsh-package <dsh 包目录>` 显式指定。）插件与预设都在 **dsh web 重启后**才挂载（profile 补丁层与包内预设目录在启动时读取）：重启 `dsh web`（checkout 开发模式 `pnpm dsh web`；npm 安装版 `dsh web`），注意会中断正在跑的会话（会话数据在磁盘上，可继续）。终端插件在 POSIX 下自动使用 `sh -i`，其余插件跨平台。卸载：删掉 `cordis.patch.yml` 中对应 `insert` 条目与 `profiles/web/node_modules` 下的对应包目录即可。
+（`--dry-run` 可先预览；`--with-patches` 额外应用「会话列表闪跳修复 + 设置暴露白名单」两个运行时补丁，否则自定义提示词/第三方思考的设置页可能显示「设置不可用」。脚本同时会把壳内置的 3 个 Agent 预设同步进能找到的 dsh 包 `config/agent-presets`——`<DSH_HOME>/agent`（如 WSL 托管布局的 `~/.dsh-desktop/agent`）与 PATH 上的 dsh 命令会自动探测，其它安装位置可用 `--dsh-package <dsh 包目录>` 显式指定。）插件与预设都在 **dsh web 重启后**才挂载（profile 补丁层与包内预设目录在启动时读取）：重启 `dsh web`（checkout 开发模式 `pnpm dsh web`；npm 安装版 `dsh web`），注意会中断正在跑的会话（会话数据在磁盘上，可继续）。会话详情里的「终端」标签由 `dsh-terminal-tab` 注册，但实现已切换为 `dsh-better-sidebar` 的 xterm + node-pty 真终端。卸载：删掉 `cordis.patch.yml` 中对应 `insert` 条目与 `profiles/web/node_modules` 下的对应包目录即可。
 
 ### wsl：壳在 WSL 里托管自己的 dsh（自动更新全闭环）
 
@@ -289,7 +287,7 @@ dsh-desktop/
 ├── wsl-backend.js        # WSL 托管后端（发行版探测 / bootstrap 安装 / 启动停止 / 更新回退）
 ├── assets/               # 加载页、更新进度页、恢复页、图标、托盘图标、配套 dsh 插件
 │   ├── sponsor/          # 赞助收款码（支付宝 / 微信，「请作者喝咖啡」面板与本文档共用）
-│   ├── agent-presets/    # 8 个内置预设（minimal-win / router-standard / anchored-standard / zero-anchored-standard / whoami-standard / v4-flash-godmode-opencode-go / warmupbetter / warmupbetter-replay），local 打包写入 / WSL 启动与更新时经 UNC 同步
+│   ├── agent-presets/    # 3 个内置预设（anchored-standard=官pro / v4-flash-godmode-opencode-go=goflash / router-standard），local 打包写入 / WSL 启动与更新时经 UNC 同步
 │   └── plugins/          # dsh-balance / dsh-file-changes / dsh-vision / zat-dsh-engine / dsh-better-sidebar / harness-pet / dsh-super-injector / dsh-wsl-settings（设置页「WSL 后端」栏）等，启动时自动同步进 web profile
 ├── scripts/
 │   ├── fetch-node.js     # 内置 node.exe 复制脚本
@@ -298,7 +296,7 @@ dsh-desktop/
 │   ├── check-latest.js   # agent 更新链路测试工具
 │   ├── check-client-latest.js # 客户端更新链路测试工具
 │   ├── patch-event-vocabulary.js # dsh-session 事件词汇表补丁（afterPack 自动调用）
-│   ├── install-minimal-win-preset.js # 内置 8 个 Agent 预设安装（npm start / afterPack / WSL 同步调用）
+│   ├── install-minimal-win-preset.js # 内置 3 个 Agent 预设安装（npm start / afterPack / WSL 同步调用）
 │   ├── test-watcher.js   # 通知检测单测
 │   ├── sync-companion-plugins.js # 把配套插件与内置 Agent 预设同步进任意 dsh（独立于壳）
 │   └── inspect-session.js# 会话日志解析工具

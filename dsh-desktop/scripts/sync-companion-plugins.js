@@ -38,6 +38,8 @@ const COMPANION_PLUGINS = [
   { id: 'client-file-changes', name: '@deepseek-ai/dsh-client-file-changes' },
   { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
+  { id: 'better-sidebar', name: 'dsh-better-sidebar' },
+  { id: 'harness-pet', name: 'harness-pet' },
   { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
   { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
   { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
@@ -68,7 +70,7 @@ function warn(msg) {
 
 // ---------------------------------------------------------------------------
 // 内置 Agent 预设同步：Windows 打包产物由 npm start / after-pack 直接写入
-// 内置 dsh 包；WSL / Linux 里另装的 dsh 是干净的 npm 包，缺少壳自带的 8 个
+// 内置 dsh 包；WSL / Linux 里另装的 dsh 是干净的 npm 包，缺少壳自带的 3 个
 // 模式预设。这里把 assets/agent-presets 幂等复制进 dsh 包的
 // config/agent-presets，让两端模式列表一致。
 // ---------------------------------------------------------------------------
@@ -215,6 +217,14 @@ function syncPlugins(home, dryRun) {
     for (const f of PLUGIN_FILES) {
       const sf = path.join(src, f);
       if (fs.existsSync(sf)) fs.copyFileSync(sf, path.join(dest, f));
+    }
+    // 与 main.js syncCompanionPlugins 对齐：完整同步 lib/assets/src 目录，
+    // better-sidebar 的懒加载 chunk（client-terminal.js 等）才能随包就位。
+    for (const sub of ['lib', 'assets', 'src']) {
+      const sdir = path.join(src, sub);
+      if (fs.existsSync(sdir)) {
+        fs.cpSync(sdir, path.join(dest, sub), { recursive: true, force: true });
+      }
     }
     log(`已安装 ${p.name}${isBundle ? '（bundle 插件）' : ''}`);
   }

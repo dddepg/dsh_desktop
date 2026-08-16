@@ -2497,9 +2497,9 @@ function syncCompanionPlugins() {
 // ---------------------------------------------------------------------------
 // 内置 Agent 预设同步：local 模式的预设由 npm start / after-pack 直接写入
 // Windows 侧内置 dsh 包的 config/agent-presets；WSL 托管模式的 dsh 是 WSL 内
-// npm 安装的干净包，不包含壳自带的 8 个预设，因此模式列表比 local 少。
+// npm 安装的干净包，不包含壳自带的 3 个预设，因此模式列表比 local 少。
 // 这里经 UNC 把 assets/agent-presets 幂等复制进 WSL agent 包，让两种后端
-// 看到的模式一致（_preset 是共享模块目录，installBuiltinPresets 一并处理）。
+// 看到的模式一致。
 // ---------------------------------------------------------------------------
 function syncBuiltinAgentPresets() {
   if (!IS_WIN || !isWslMode()) return;

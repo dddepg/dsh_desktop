@@ -67,6 +67,7 @@
 - **DeepSeek 余额小部件**：对话底部统计栏显示「本轮 ¥X · 余额 ¥Y」，点击跳转充值
 - **文件更改追踪 + 一键还原**：详情面板「文件」标签页查看本会话全部文件改动（行级 diff）并逐文件/全部还原，数据只读复用会话日志，稳定不受升级影响
 - **会话完成通知**：agent 任务跑完时弹 Windows 系统通知，点击回到窗口
+- **内置 M3 皮肤**：Material Design 3（Material You）主题已集成，设置 → 外观 可切换；本个人分支首次启动默认启用
 
  - **隐藏对话输出**：设置 → 通用设置 →「隐藏对话输出」，隐藏大量工具调用、工具结果与思考过程，每一轮的最终总结输出仍然显示
  - **会话导航滑轨**：对话右侧的虚化滑轨随会话长度变化；每条用户输入在滑轨上以圆点标出位置，悬停时在鼠标位置显示垂直短横线预览，点击才跳转
@@ -75,9 +76,9 @@
 - **识图插件 dsh-vision**：设置页直接填写 OpenAI 兼容 VLM 的 API 地址、密钥和模型，会话中即可使用 `view_image` 工具（OCR / 看图 / 读图表），默认智谱免费 `glm-4.6v-flash`
  - **渲染进程崩溃自愈**：页面崩溃/假死时指数退避自动重载，连续失败第 3 次重建窗口；超过上限显示本地恢复页（重新加载 / 重启客户端 / 打开日志），并弹系统通知
 - **会话历史兼容补丁**：打包时自动修补内置 `@deepseek-ai/dsh-session` 事件词汇表，插件（dsh-agent-teams / dsh-message-edit / dsh-web-search-exa）写入的会话事件不再导致历史无法打开
-- **内置「极简模式_win」预设**：基于官方极简模式，把 bash 替换为 Windows PowerShell（`pwsh` + `str_replace_editor`）
+- **内置 3 个 Agent 预设**：`anchored-standard`（显示名「官pro」）、`v4-flash-godmode-opencode-go`（显示名「goflash」）、`router-standard`（显示名「router-standard」）
 - **内置 dsh-routing-suite**：`dsh-super-injector`（dev_* 插件注入/热重载/自愈工具）+ `router-standard` 预设
-- **内置 dsh-anchored-standard**：`anchored-standard` / `zero-anchored-standard` 实验性预设
+- **内置 dsh-anchored-standard**：`anchored-standard`（显示名「官pro」）预设
 
 - **余额提示开关**：chrome 菜单「显示余额/本轮费用」可一键关闭，第三方中转用户不再被余额提示打扰
 - **第三方模型思考强度默认安全**：`reasoning_effort` 注入默认关闭，仅 provider 支持时手动开启，避免百炼等严格 API 报参数错误

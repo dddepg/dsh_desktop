@@ -96,12 +96,12 @@ module.exports = async function afterPack(context) {
     console.warn('afterPack: bundled dsh-session not found — vocabulary patch skipped');
   }
 
-  // Ship the desktop's minimal_win preset in the bundled dsh CLI (idempotent).
+  // Ship the desktop's built-in agent presets in the bundled dsh CLI (idempotent).
   const dshPkgDir = path.join(appOutDir, 'resources', 'app', 'node_modules', '@deepseek-ai', 'dsh');
   if (fs.existsSync(path.join(dshPkgDir, 'package.json'))) {
     const presetDirs = installBuiltinPresets(dshPkgDir);
     console.log(`afterPack: builtin presets installed (${presetDirs.length}): ${presetDirs.map((p) => path.basename(p)).join(", ")}`);
   } else {
-    console.warn('afterPack: bundled dsh package not found — minimal-win preset skipped');
+    console.warn('afterPack: bundled dsh package not found — built-in presets skipped');
   }
 };

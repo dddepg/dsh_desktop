@@ -33,10 +33,9 @@ DSH Desktop 集成了大量开源组件。本文件汇总主要第三方项目�
 
 | 预设 | 上游 | 许可证 |
 |---|---|---|
-| `router-standard` | [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite) / [dsh-router-standard](https://github.com/yjh051108/dsh-router-standard) | MIT |
-| `anchored-standard`、`zero-anchored-standard`、`whoami-standard` | [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) | MIT |
-| `v4-flash-godmode-opencode-go` | [SheberDavid/v4-flash-godmode-opencode-go](https://github.com/SheberDavid/v4-flash-godmode-opencode-go) | ⚠️ 上游无 LICENSE，分发前需确认 |
-| `warmupbetter`、`warmupbetter-replay` | [0liveiraaa/myDshPresets](https://github.com/0liveiraaa/myDshPresets) | 上游附 `LICENSE.deepseek-harness`（MIT 文本），建议与作者确认 |
+| `router-standard`（显示名 router-standard） | [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite) / [dsh-router-standard](https://github.com/yjh051108/dsh-router-standard) | MIT |
+| `anchored-standard`（显示名 官pro） | [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) | MIT |
+| `v4-flash-godmode-opencode-go`（显示名 goflash） | [SheberDavid/v4-flash-godmode-opencode-go](https://github.com/SheberDavid/v4-flash-godmode-opencode-go) | ⚠️ 上游无 LICENSE，分发前需确认 |
 
 ## 其他说明
 

@@ -428,8 +428,11 @@ let m3ThemeEnabled = false;
 let m3SettingsObserver = null;
 
 function m3LoadPreference() {
-  try { return localStorage.getItem(M3_THEME_KEY) === 'm3'; }
-  catch { return false; }
+  try {
+    const saved = localStorage.getItem(M3_THEME_KEY);
+    if (saved !== null) return saved === 'm3';
+    return true; // personal branch: M3 皮肤默认启用，仍可在设置 → 外观 中关闭
+  } catch { return true; }
 }
 
 function m3SavePreference(enabled) {

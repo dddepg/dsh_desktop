@@ -288,6 +288,7 @@ dsh-desktop/
 ├── assets/               # 加载页、更新进度页、恢复页、图标、托盘图标、配套 dsh 插件
 │   ├── sponsor/          # 赞助收款码（支付宝 / 微信，「请作者喝咖啡」面板与本文档共用）
 │   ├── agent-presets/    # 3 个内置预设（anchored-standard=官pro / v4-flash-godmode-opencode-go=goflash / router-standard），local 打包写入 / WSL 启动与更新时经 UNC 同步
+│   ├── themes/           # M3 (Material Design 3) 皮肤（CSS / 预览 / 设计文件），首次启动默认启用
 │   └── plugins/          # dsh-balance / dsh-file-changes / dsh-vision / zat-dsh-engine / dsh-better-sidebar / harness-pet / dsh-super-injector / dsh-wsl-settings（设置页「WSL 后端」栏）等，启动时自动同步进 web profile
 ├── scripts/
 │   ├── fetch-node.js     # 内置 node.exe 复制脚本

@@ -41,7 +41,6 @@ const COMPANION_PLUGINS = [
   { id: 'skin-switch', name: '@deepseek-ai/dsh-skin-switch' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
-  { id: 'harness-pet', name: 'harness-pet' },
   { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
   { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
   { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
@@ -168,6 +167,36 @@ function syncBuiltinPresets(home, dshPackageArg, dryRun) {
   }
 }
 
+function removeRetiredHarnessPet(home, dryRun) {
+  // 个人分支已禁用桌宠：清掉旧的 bundle 登记与 profile 包目录。
+  const profileDir = path.join(home, 'profiles', 'web');
+  const pkgDir = path.join(profileDir, 'node_modules', 'harness-pet');
+  if (fs.existsSync(pkgDir)) {
+    if (dryRun) log('dry-run: 将移除已禁用的桌宠包 harness-pet');
+    else {
+      fs.rmSync(pkgDir, { recursive: true, force: true });
+      log('已移除已禁用的桌宠包: harness-pet');
+    }
+  }
+  const manifestFile = path.join(profileDir, 'package.json');
+  try {
+    if (!fs.existsSync(manifestFile)) return;
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    const bundles = manifest && manifest.dsh && manifest.dsh.profile && Array.isArray(manifest.dsh.profile.bundles) ? manifest.dsh.profile.bundles : [];
+    if (bundles.includes('harness-pet')) {
+      if (dryRun) {
+        log('dry-run: 将从 web profile bundles 移除桌宠 harness-pet');
+        return;
+      }
+      manifest.dsh.profile.bundles = bundles.filter((name) => name !== 'harness-pet');
+      fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+      log('已从 web profile bundles 移除桌宠: harness-pet');
+    }
+  } catch (err) {
+    warn('移除桌宠 bundle 登记失败: ' + (err && err.message ? err.message : err));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 插件同步（与 main.js syncCompanionPlugins 同逻辑，dry-run 时只读不改）
 // ---------------------------------------------------------------------------
@@ -209,6 +238,7 @@ function syncPlugins(home, dryRun) {
       log('已移除旧插件市场包: @deepseek-ai/dsh-plugin-marketplace');
     }
   }
+  removeRetiredHarnessPet(home, dryRun);
 
   // 拷贝插件文件；bundle 插件（package.json 声明 dsh.bundle.patch）不写 patch 行。
   const bundleNames = new Set();

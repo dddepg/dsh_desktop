@@ -2223,7 +2223,6 @@ const COMPANION_PLUGINS = [
   { id: 'skin-switch', name: '@deepseek-ai/dsh-skin-switch' },
   { id: 'plugin-market', name: 'zat-dsh-engine' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
-  { id: 'harness-pet', name: 'harness-pet' },
   { id: 'float-window', name: '@deepseek-ai/dsh-float-window' },
   { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
   { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
@@ -2298,6 +2297,32 @@ function removeLegacyMarketplace(profileWebModules, profileDir) {
       log('boot', '已从 cordis.patch.yml 移除旧插件市场条目');
     }
   } catch {}
+}
+
+function removeRetiredHarnessPet(profileDir) {
+  // 个人分支已禁用桌宠：清掉旧的 bundle 登记与 profile 包目录。
+  const pkgDir = path.join(profileDir, 'node_modules', 'harness-pet');
+  try {
+    if (fs.existsSync(pkgDir)) {
+      fs.rmSync(pkgDir, { recursive: true, force: true });
+      log('boot', '已移除已禁用的桌宠包: harness-pet');
+    }
+  } catch (err) {
+    log('boot', '移除桌宠包失败: ' + err.message);
+  }
+  const manifestFile = path.join(profileDir, 'package.json');
+  try {
+    if (!fs.existsSync(manifestFile)) return;
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    const bundles = manifest && manifest.dsh && manifest.dsh.profile && Array.isArray(manifest.dsh.profile.bundles) ? manifest.dsh.profile.bundles : [];
+    if (bundles.includes('harness-pet')) {
+      manifest.dsh.profile.bundles = bundles.filter((name) => name !== 'harness-pet');
+      fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+      log('boot', '已从 web profile bundles 移除桌宠: harness-pet');
+    }
+  } catch (err) {
+    log('boot', '移除桌宠 bundle 登记失败: ' + err.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2381,6 +2406,7 @@ function syncCompanionPlugins() {
     const expectedDirs = new Set(COMPANION_PLUGINS.map(companionDirName));
     removeStaleCompanionPlugins(profileModules, expectedDirs);
     removeLegacyMarketplace(path.join(profileDir, 'node_modules'), profileDir);
+    removeRetiredHarnessPet(profileDir);
 
     const bundleNames = new Set();
     const copyFiles = [
@@ -2418,8 +2444,8 @@ function syncCompanionPlugins() {
         if (fs.existsSync(sf)) fs.copyFileSync(sf, path.join(dest, f));
       }
       // 完整同步插件自带的 lib/assets/src 目录：第三方插件（如
-      // dsh-better-sidebar 的懒加载 chunk、harness-pet 的动画素材）不都落在
-      // 固定文件清单里，递归复制保证打包产物与资源随插件一起进 profile。
+      // dsh-better-sidebar 的懒加载 chunk）不都落在固定文件清单里，
+      // 递归复制保证打包产物与资源随插件一起进 profile。
       for (const sub of ['lib', 'assets', 'src']) {
         const sdir = path.join(src, sub);
         if (fs.existsSync(sdir)) {

@@ -99,9 +99,9 @@
 - [omdsh-dev/DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar)（MIT）内置：会话隔离的 VSCode 式右侧边栏（资源管理器 / 编辑器 / 终端 / Git / 浏览器），并开放服务供其他插件注册边栏页与文件查看器。
 - 以 bundle 形式随桌面端分发（`assets/plugins/dsh-better-sidebar`，含 LICENSE、预编译 lib 与源码）；启动时自动同步进 web profile。
 
-## 桌面宠物（harness-pet）
+## 桌面宠物（已禁用）
 
-- [cakeni/harness-pet](https://github.com/cakeni/harness-pet)（MIT）内置：会话旁的鲸鱼小宠物，素材与归因随包分发（`assets/plugins/harness-pet`）。
+- 个人分支已禁用 `harness-pet`：不再注册为 bundle，启动同步时会自动清理旧 profile 里的 bundle 登记与包目录。
 - 同样以 bundle 形式自动同步进 web profile。
 
 ## 稳定性与兼容性（0.3.6）
@@ -291,7 +291,7 @@ dsh-desktop/
 │   ├── agent-presets/    # 3 个内置预设（anchored-standard=官pro / v4-flash-godmode-opencode-go=goflash / router-standard），local 打包写入 / WSL 启动与更新时经 UNC 同步
 │   ├── themes/           # M3 (Material Design 3) 皮肤（CSS / 预览 / 设计文件），首次启动默认启用
 │   ├── skins/            # 10 款内置社区皮肤包（设置 → 皮肤 切换）
-│   └── plugins/          # dsh-balance / dsh-file-changes / dsh-gitgraph / dsh-vision / zat-dsh-engine / dsh-better-sidebar / harness-pet / dsh-super-injector / dsh-wsl-settings（设置页「WSL 后端」栏）等，启动时自动同步进 web profile
+│   └── plugins/          # dsh-balance / dsh-file-changes / dsh-gitgraph / dsh-vision / zat-dsh-engine / dsh-better-sidebar / dsh-super-injector / dsh-wsl-settings（设置页「WSL 后端」栏）等，启动时自动同步进 web profile
 ├── scripts/
 │   ├── fetch-node.js     # 内置 node.exe 复制脚本
 │   ├── fetch-npm.js      # 内置 npm CLI 复制脚本

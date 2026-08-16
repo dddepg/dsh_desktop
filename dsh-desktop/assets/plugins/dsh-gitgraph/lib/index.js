@@ -214,7 +214,7 @@ async function handleRepos(req, res) {
         name: path.relative(repos.outer, root) || path.basename(root) || `内层 ${i + 1}`,
       })),
     ];
-    sendJson(res, 200, { outer: repos.outer, repos: all });
+    sendJson(res, 200, { outer: repos.outer, defaultRepoId: "outer", repos: all });
   } catch (err) {
     sendJson(res, 500, { error: (err && err.message) || String(err) });
   }

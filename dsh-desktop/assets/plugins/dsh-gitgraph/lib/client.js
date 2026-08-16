@@ -49,6 +49,7 @@ window.__ModuleLoader__.load({
 				setCwd("");
 				setRepos(null);
 				setGraph(null);
+				setSelected("outer");
 				setError("");
 				if (!sessionId) {
 					setError("没有活动会话");
@@ -63,7 +64,7 @@ window.__ModuleLoader__.load({
 					})
 					.catch(() => { if (alive) setError("会话目录查询失败"); });
 				return () => { alive = false; };
-			}, [sessionId, reload]);
+			}, [sessionId]);
 
 			react.useEffect(() => {
 				if (!cwd) return;
@@ -75,8 +76,9 @@ window.__ModuleLoader__.load({
 					.then((j) => {
 						if (!alive) return;
 						if (j && Array.isArray(j.repos) && j.repos.length > 0) {
+							const defaultId = j.repos.some((repo) => repo.id === j.defaultRepoId) ? j.defaultRepoId : j.repos[0].id;
 							setRepos(j.repos);
-							setSelected((prev) => j.repos.some((repo) => repo.id === prev) ? prev : j.repos[0].id);
+							setSelected((prev) => j.repos.some((repo) => repo.id === prev) ? prev : defaultId);
 						} else {
 							setRepos(null);
 							setGraph(null);

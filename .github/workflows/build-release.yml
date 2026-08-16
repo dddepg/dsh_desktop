@@ -1,0 +1,109 @@
+name: build-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号（例如 0.3.9 或 v0.3.9；留空则用 dsh-desktop/package.json 的当前版本）'
+        required: false
+        default: ''
+      draft:
+        description: '是否创建为草稿 Release'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      prerelease:
+        description: '是否标记为预发布（prerelease）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build-windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dsh-desktop/package-lock.json
+
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $raw = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $raw = "${{ github.event.inputs.version }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($raw)) {
+            $raw = (Get-Content 'dsh-desktop/package.json' -Raw | ConvertFrom-Json).version
+          }
+          $version = ($raw -replace '^v', '').Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+') {
+            throw "Invalid release version: '$version'"
+          }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "release version: $version"
+
+      - name: Install dependencies
+        working-directory: dsh-desktop
+        shell: pwsh
+        run: npm ci
+
+      - name: Apply release version
+        working-directory: dsh-desktop
+        shell: pwsh
+        run: npm version "$env:RELEASE_VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Fetch bundled runtime
+        working-directory: dsh-desktop
+        shell: pwsh
+        run: npm run fetch-runtime
+
+      - name: Build Windows app
+        working-directory: dsh-desktop
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist
+
+      - name: List artifacts
+        shell: pwsh
+        run: Get-ChildItem 'dsh-desktop\dist' | Select-Object Name, Length
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: DSH Desktop v${{ env.RELEASE_VERSION }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.draft == 'true' || false }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease == 'true' || false }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dsh-desktop/dist/*.exe

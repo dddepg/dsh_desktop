@@ -2561,6 +2561,7 @@ const COMPANION_PLUGINS = [
   // user 消息（悬停预览/点击跳转/滚轮切换），取代 conversation-tweaks
   // 内置的会话滑轨。
   { id: 'dsh-navbar', name: '@vlln/dsh-navbar' },
+  { id: 'compaction-acp', name: 'billion-context-dsh' },
   { id: 'conversation-tweaks', name: '@deepseek-ai/dsh-conversation-tweaks' },
   { id: 'super-injector', name: '@dsh-external/dsh-super-injector' },
   { id: 'prompt-custom', name: '@deepseek-ai/dsh-prompt-custom' },
@@ -2877,7 +2878,7 @@ function syncCompanionPlugins() {
       // 完整同步插件自带的 lib/assets/src 目录：第三方插件（如
       // dsh-better-sidebar 的懒加载 chunk）不都落在固定文件清单里，
       // 递归复制保证打包产物与资源随插件一起进 profile。
-      for (const sub of ['lib', 'assets', 'src']) {
+      for (const sub of ['lib', 'assets', 'src', 'dist', 'node_modules']) {
         syncDir(path.join(src, sub), path.join(dest, sub));
       }
       // Bundle 插件不写 patch 行：dsh 在启动时读取 profile 的
@@ -3047,6 +3048,23 @@ function syncCompanionPlugins() {
     if (changed) {
       fs.writeFileSync(patchFile, patch);
       log('boot', '已同步配套插件/皮肤到 web profile: ' + patchRows.map((p) => p.id).join(', '));
+    }
+    // billion-context-dsh（compaction-acp）与 preset realm 的 compaction-basic
+    // 不能并存：ACP 作为模型驱动压缩后端接管决策，basic 需显式禁用（幂等，
+    // 已存在用户条目时尊重用户配置）。
+    if (bundleNames.has('billion-context-dsh')) {
+      let acpPatch = '';
+      try { acpPatch = fs.readFileSync(patchFile, 'utf8'); } catch { acpPatch = ''; }
+      if (!/(?:^|\n)\s*-?\s*id\s*:\s*compaction-basic\b/.test('\n' + acpPatch)) {
+        const block = '\n# billion-context-dsh：禁用 preset realm 的 compaction-basic（ACP 模型驱动后端接管压缩决策）\n- id: compaction-basic\n  disabled: true\n';
+        if (/^\s*\[\]\s*$/m.test(acpPatch)) acpPatch = acpPatch.replace(/\[\]/m, block.trim());
+        else if (acpPatch.trim() === '') acpPatch = '# dsh web profile patch（由 DSH Desktop 维护）\n' + block.trim();
+        else acpPatch = acpPatch.replace(/\s*$/, '\n') + block;
+        fs.writeFileSync(patchFile, acpPatch);
+        log('boot', '已写入 compaction-basic 禁用条目（billion-context-dsh 接管压缩后端）');
+      } else {
+        log('boot', 'compaction-basic 禁用条目已存在（跳过）');
+      }
     }
   } catch (err) {
     log('boot', '同步配套插件失败: ' + err.message);

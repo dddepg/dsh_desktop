@@ -271,7 +271,7 @@ function syncPlugins(home, dryRun) {
     }
     // 与 main.js syncCompanionPlugins 对齐：完整同步 lib/assets/src 目录，
     // better-sidebar 的懒加载 chunk（client-terminal.js 等）才能随包就位。
-    for (const sub of ['lib', 'assets', 'src']) {
+    for (const sub of ['lib', 'assets', 'src', 'dist', 'node_modules']) {
       const sdir = path.join(src, sub);
       if (fs.existsSync(sdir)) {
         fs.cpSync(sdir, path.join(dest, sub), { recursive: true, force: true });

@@ -94,6 +94,7 @@ window.__ModuleLoader__.load({
 				if (!repo) return;
 				let alive = true;
 				setLoading(true);
+				setGraph(null);
 				setError("");
 				fetch("/dsh-gitgraph/graph?cwd=" + encodeURIComponent(repo.root) + "&max=120")
 					.then((r) => r.json())

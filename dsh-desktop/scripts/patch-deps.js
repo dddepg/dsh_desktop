@@ -3,6 +3,7 @@
 // 错误文案。由 postinstall / pack / dist 在打包前应用；匹配失败只告警不中断。
 const fs = require('node:fs');
 const path = require('node:path');
+const { writeFileAtomic } = require('./lib/patch-io');
 
 const root = path.resolve(__dirname, '..');
 const target = path.join(root, 'node_modules', '@deepseek-ai', 'dsh-host-directory-picker-native', 'lib', 'index.js');
@@ -33,7 +34,7 @@ function main() {
     return;
   }
   src = src.replace(OLD_RE, NEW_BLOCK);
-  fs.writeFileSync(target, src);
+  writeFileAtomic(target, src);
   console.log('[patch-deps] 已补丁 picker-native：worker 退出上报 exit code / signal');
 }
 
@@ -49,7 +50,8 @@ require('./patch-pi-ai-credits.js');
 // 运行时补丁覆盖（幂等，锚点不匹配只告警不中断）。
 try {
   const { patchMenuViewport } = require('./patch-menu-viewport');
-  const n = patchMenuViewport(root, (m) => console.log(m));
+  // 补丁函数期望 node_modules 根目录（path.join(nmRoot, '@deepseek-ai', ...)）。
+  const n = patchMenuViewport(path.join(root, 'node_modules'), (m) => console.log(m));
   if (n > 0) console.log('[patch-deps] menu-viewport 补丁已应用（dev node_modules）');
 } catch (err) {
   console.log('[patch-deps] menu-viewport 补丁跳过: ' + (err && err.message ? err.message : err));
@@ -60,8 +62,54 @@ try {
 // 补丁覆盖（幂等，锚点不匹配只告警不中断）。
 try {
   const { patchSessionManage } = require('./patch-session-manage');
-  const n = patchSessionManage(root, (m) => console.log(m));
+  // 补丁函数期望 node_modules 根目录（path.join(nmRoot, '@deepseek-ai', ...)）。
+  const n = patchSessionManage(path.join(root, 'node_modules'), (m) => console.log(m));
   if (n > 0) console.log('[patch-deps] session-manage 补丁已应用（dev node_modules）');
 } catch (err) {
   console.log('[patch-deps] session-manage 补丁跳过: ' + (err && err.message ? err.message : err));
+}
+
+// 顺带应用「打开项目目录」补丁（issue #85）：侧栏项目/会话行 ⋯ 菜单增加
+// 「打开项目目录」+ 右键菜单（dsh-client-ui-workspace）。依赖
+// dsh-session-manager 插件提供的 window.__dshDesktopOpenDir 桥；开发模式
+// （npm start）直接打 dev node_modules；打包由 after-pack 与启动时运行时
+// 补丁覆盖（幂等，锚点不匹配只告警不中断）。
+try {
+  const { patchOpenProjectDir } = require('./patch-open-project-dir');
+  // 注意：补丁函数期望 node_modules 根目录（与 slot-compat 一致）；其它
+  // 旧补丁块直接传 root 是历史遗留，这里保持正确传法。
+  const n = patchOpenProjectDir(path.join(root, 'node_modules'), (m) => console.log(m));
+  if (n > 0) console.log('[patch-deps] open-project-dir 补丁已应用（dev node_modules）');
+} catch (err) {
+  console.log('[patch-deps] open-project-dir 补丁跳过: ' + (err && err.message ? err.message : err));
+}
+
+// 会话进程在 frame 收尾后、JSONL 行写完前中断时，官方读取器会把可恢复的
+// 最终半条记录误判为永久损坏。让它复用已有 torn-tail repair 流程。
+try {
+  const { patchSessionPersistence } = require('./patch-session-persistence');
+  // 补丁函数期望 node_modules 根目录（path.join(nmRoot, '@deepseek-ai', ...)）。
+  const n = patchSessionPersistence(path.join(root, 'node_modules'), (m) => console.log(m));
+  if (n > 0) console.log('[patch-deps] session-persistence 尾部恢复补丁已应用（dev node_modules）');
+} catch (err) {
+  console.log('[patch-deps] session-persistence 尾部恢复补丁跳过: ' + (err && err.message ? err.message : err));
+}
+// 空 tool-call 持久化会把 tool/result 的 callId 写成空串，restore 严格校验
+// 直接击穿（整个会话打不开）。读端 dsh-session 容错 + 写端 dsh-agent-loop 防护。
+try {
+  const { patchToolSourceCompat } = require('./lib/tool-source-patch');
+  const n = patchToolSourceCompat(path.join(root, 'node_modules'), (m) => console.log(m));
+  if (n > 0) console.log('[patch-deps] tool source 容错补丁已应用（dev node_modules）');
+} catch (err) {
+  console.log('[patch-deps] tool source 容错补丁跳过: ' + (err && err.message ? err.message : err));
+}
+// rc.6 第三方客户端插件用 `id` 注册 keyed slot；rc.7 改为强制 `key`，而
+// dsh-advisor / dsh-llm-fallbacks key/id 都不传，单个插件就能拖垮整个 loader。
+// 只在 keyed slot 缺 key 时兜底；显式 key 与其它 slot 行为保持原样。
+try {
+  const { patchSlotCompat } = require('./patch-slot-compat');
+  const n = patchSlotCompat(path.join(root, 'node_modules'), (m) => console.log(m));
+  if (n > 0) console.log('[patch-deps] keyed slot 兼容补丁已应用（dev node_modules）');
+} catch (err) {
+  console.log('[patch-deps] keyed slot 兼容补丁跳过: ' + (err && err.message ? err.message : err));
 }

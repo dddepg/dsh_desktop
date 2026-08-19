@@ -2,7 +2,12 @@
 //   1. 设置页「归档对话管理」栏：列出全部已归档会话（标题/项目/更新时间），
 //      每条提供「恢复」与「删除」；
 //   2. 暴露 window.__dshSessionManager 桥，供官方会话行 ⋯ 菜单补丁
-//      （patch-session-manage.js 注入的「删除对话」项）调用。
+//      （patch-session-manage.js 注入的「删除对话」项）调用；该桥是「删除对话」
+//      菜单项的显式能力契约——patch-session-manage.js 按此桥是否存在决定是否
+//      显示「删除对话」项（桥缺失时隐藏，见 host-capabilities.js）；
+//   3. 「打开项目目录」（issue #85）由 patch-open-project-dir.js 注入，现直接
+//      引用 preload 宿主能力 window.dshDesktop.openPath；下方 window.__dshDesktopOpenDir
+//      别名仅保留给旧版已打补丁文件（向后兼容，可随一个版本周期后移除）。
 // 底层 RPC：workspace.unarchiveSession / workspace.deleteSession（由
 // patch-session-manage.js 补进 dsh-host-apiproxy 与 dsh-client-connection）；
 // 状态更新走官方 host 帧（archived-sessions-changed / session-removed），
@@ -135,6 +140,55 @@ window.__ModuleLoader__.load({
 		}
 
 		// ------------------------------------------------------------------
+		// 焦点兜底：删除「非当前」会话后输入框光标丢失但可输入。
+		//
+		// 根因（已实锤，官方缺陷）：composer 的 focus effect 只依赖
+		// [locked, sessionId]，而点行菜单删除按钮时同会话内发生的失焦不在覆盖
+		// 范围 → 光标消失、输入框却仍启用。这里订阅 sessions.list：检测到
+		// 「有会话被删且当前会话未变」后，双 rAF 等 DOM 稳定，把焦点与光标补回
+		// composer 输入框；删除当前会话时 current 变化/变 void 0、或输入框处于
+		// disabled/readOnly（hero 场景）会自动跳过，不抢焦点。
+		// 纯判断（无 DOM）与恢复动作分离，后者注入 document 便于单测。
+		// ------------------------------------------------------------------
+		function shouldRestoreFocusAfterRemoval(prev, next) {
+			if (!prev || !next || next.phase !== "ready") return false;
+			const prevIds = prev.ids || [];
+			const nextIds = next.ids || [];
+			const removed = prevIds.some((id) => !nextIds.includes(id));
+			if (!removed) return false;
+			// 当前会话被删（current 变 void 0 或跟随切换）→ 输入框禁读，无需也不应补焦。
+			if (next.current === void 0 || next.current !== prev.current) return false;
+			return true;
+		}
+
+		function restoreComposerFocus(doc) {
+			const wrap = doc && typeof doc.querySelector === "function" ? doc.querySelector("[data-input-scroll]") : null;
+			const textarea = wrap ? wrap.querySelector("textarea") : null;
+			if (!textarea || textarea.disabled || textarea.readOnly) return false;
+			const active = doc.activeElement;
+			if (active && active !== doc.body && active !== doc.documentElement) {
+				const tag = active.tagName;
+				if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT" || active.isContentEditable) return false;
+			}
+			textarea.focus({ preventScroll: true });
+			const len = textarea.value ? textarea.value.length : 0;
+			try { textarea.setSelectionRange(len, len); } catch (_) { /* 忽略不支持 selection 的宿主 */ }
+			return true;
+		}
+
+		function setupComposerFocusGuard(sessions) {
+			let prev = sessions.list.getSnapshot();
+			return sessions.list.subscribe(() => {
+				const next = sessions.list.getSnapshot();
+				const shouldRestore = shouldRestoreFocusAfterRemoval(prev, next);
+				prev = next;
+				if (!shouldRestore) return;
+				// 双 rAF：等 React 提交与布局稳定后再查 DOM（删除信号先于重渲染到达）。
+				requestAnimationFrame(() => requestAnimationFrame(() => restoreComposerFocus(document)));
+			});
+		}
+
+		// ------------------------------------------------------------------
 		// 设置页面板
 		// ------------------------------------------------------------------
 		function ArchiveManagerCard(props) {
@@ -220,6 +274,10 @@ window.__ModuleLoader__.load({
 				unarchiveSession: (sessionId) => unarchiveSession(ctx, String(sessionId))
 			};
 
+			// 「打开项目目录」桥（issue #85）：侧栏项目/会话行菜单 → 宿主
+			// shell.openPath。复用 preload 暴露的 dshDesktop.openPath。
+			window.__dshDesktopOpenDir = (dir) => window.dshDesktop?.openPath?.(dir);
+
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: NS,
@@ -227,10 +285,16 @@ window.__ModuleLoader__.load({
 				label: () => L.nav,
 				inject: () => ({ workspaces: ctx.workspaces, sessions: ctx.sessions, connection: ctx.connection })
 			}, ArchiveManagerSection), "dsh-session-manager: archived conversations manager");
+
+			// 焦点兜底（幂等）：随 scope 生命周期自动订阅/清理。
+			ctx.effect(() => setupComposerFocusGuard(ctx.sessions),
+				"dsh-session-manager: composer focus guard");
 		}
 
 		exports.apply = apply;
 		exports.inject = ["slots", "settingsScope", "workspaces", "sessions", "connection"];
+		// 纯函数导出：仅供 node 单测与插件自检（runtime 只消费 apply/inject）。
+		exports.focusGuard = { shouldRestoreFocusAfterRemoval, restoreComposerFocus };
 		return module.exports;
 	}
 });

@@ -1,179 +1,180 @@
-[中文](README.md) | [English](README.en.md)
+![DSH Desktop](https://cdn.jsdelivr.net/gh/myYangyunfan/dsh_desktop@5c673d6/docs/banner.svg)
 
-# DSH Desktop
+**把 DeepSeek Harness 装进桌面（Windows / macOS）的开箱即用客户端**
 
-把 [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)（DeepSeek Harness）封装为开箱即用的 Windows 桌面客户端。
+内置完整 dsh 运行时与全部官方插件，免装 Node.js，双击即用
 
-> 🚀 **一页看全**：打开 [`landing/index.html`](landing/index.html) 宣发落地页（深色科技风，单文件可托管到 Gitee/GitHub Pages 分享），或在 [GitHub](https://github.com/myYangyunfan/dsh_desktop)/[Gitee](https://gitee.com/my-yang-yunfan/dsh_desktop) 仓库内直接浏览。
+[![Release](https://img.shields.io/github/v/release/myYangyunfan/dsh_desktop?color=4D6BFE&label=Release)](https://github.com/myYangyunfan/dsh_desktop/releases) [![Stars](https://img.shields.io/github/stars/myYangyunfan/dsh_desktop?style=social)](https://github.com/myYangyunfan/dsh_desktop) [![Forks](https://img.shields.io/github/forks/myYangyunfan/dsh_desktop?style=social)](https://github.com/myYangyunfan/dsh_desktop/fork) [![Downloads](https://img.shields.io/github/downloads/myYangyunfan/dsh_desktop/total?color=4D6BFE)](https://github.com/myYangyunfan/dsh_desktop/releases) [![Issues](https://img.shields.io/github/issues/myYangyunfan/dsh_desktop?color=4D6BFE)](https://github.com/myYangyunfan/dsh_desktop/issues) ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20%C2%B7%20macOS%2012%2B-4D6BFE) ![License](https://img.shields.io/badge/license-MIT-4D6BFE) [![Release CI](https://img.shields.io/github/actions/workflow/status/myYangyunfan/dsh_desktop/release.yml?color=4D6BFE&label=Release%20CI)](https://github.com/myYangyunfan/dsh_desktop/actions) [![Gitee Stars](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgitee.com%2Fapi%2Fv5%2Frepos%2Fmy-yang-yunfan%2Fdsh_desktop&query=%24.stargazers_count&label=Gitee%20Stars&color=4D6BFE)](https://gitee.com/my-yang-yunfan/dsh_desktop)
+
+[Gitee 镜像](https://gitee.com/my-yang-yunfan/dsh_desktop) · [![English](https://img.shields.io/badge/English-4D6BFE?style=for-the-badge&logo=translate)](README.en.md) · [宣发落地页](landing/index.html)
 
 ---
 
-## 下载安装
+## ✨ 特性
 
-### 国内用户（Gitee，分片下载）
+### 开箱即用
 
-> Gitee 单文件限制 100 MB，安装包已拆分为 2 个分片，下载后合并即可。
+- **零依赖** — 内置独立 Node 运行时与 npm CLI，目标机器无需安装任何环境
+- **完整 dsh** — 打包 `@deepseek-ai/dsh` 及全部官方插件，离线可用
+- **一键启动** — 双击即启 `dsh web`，优先复用上次端口，就绪后载入原生窗口
+- **双形态** — 便携版（免安装、可放 U 盘）+ 安装版（桌面/开始菜单快捷方式）
 
-1. 下载以下文件，放到**同一个文件夹**：
+### 体验增强
 
-   **便携版**（免安装，双击即用，可放 U 盘）：
-   - [part1](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.3/DSH-Desktop-0.3.3-portable-x64.exe.part1)（~95 MB）
-   - [part2](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.3/DSH-Desktop-0.3.3-portable-x64.exe.part2)（~22 MB）
+- **深色玻璃无边框窗口** — 自绘标题栏、Win11 圆角，关闭默认隐藏到系统托盘
+- **桌面宠物** — 随行小鲸鱼常驻桌面，陪伴工作（设置 → 插件可一键开关）
+- **侧边会话浮窗** — 随时唤起独立会话窗口，与主会话互不干扰
+- **会话管理** — 归档 / 恢复 / 删除对话，历史不再堆积
+- **余额小部件** — 对话底部实时显示「本轮费用 · 余额」，支持 OpenCode Go 订阅额度，点击直达充值
+- **完成通知** — agent 任务跑完弹 Windows 系统通知，点击回到窗口
+- **内置 10 款社区皮肤** — 设置 → 皮肤 浏览切换（blue-fantasy / dragon-heir / maid-atelier / miku / minecraft / qq98 / ths / trading / whale-song / xp）；M3 皮肤首次启动默认启用
+- **侧边栏 GitGraph** — VSCode 风格分支地图概览，自动识别外层 + 内层双仓库并支持一键切换
+- **推理强度滑块** — 六档 `Off/Low/Medium/High/Extra/Max`，Claude 风格动画 + HanaAyane chibi runner 拇指形象
+- **会话导航滑轨** — 对话右侧虚化滑轨随会话长度变化，每条用户输入以圆点标出，悬停预览、点击跳转
+- **文件更改追踪 + 一键还原** — 详情面板「文件」标签页查看本会话全部文件改动（行级 diff）并逐文件/全部还原
+- **隐藏对话输出** — 设置 → 通用设置 →「隐藏对话输出」，隐藏大量工具调用、工具结果与思考过程，每一轮的最终总结输出仍然显示
+- **内置 Agent 预设** — `anchored-standard`（显示名「官pro」）、`router-jspace`、`router-standard`、`v4-flash-godmode-opencode-go`（显示名「goflash」）
 
-   **安装版**（安装到系统，创建桌面/开始菜单快捷方式）：
-   - [part1](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.3/DSH-Desktop-Setup-0.3.3-x64.exe.part1)（~95 MB）
-   - [part2](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.3/DSH-Desktop-Setup-0.3.3-x64.exe.part2)（~22 MB）
+### 工程韧性
 
-2. 下载 [merge.bat](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.3/merge.bat)，放到同一文件夹，双击运行即可自动合并出 exe。
+- **崩溃自愈** — 渲染进程假死指数退避自动重载；主进程异常退出由看门狗拉起
+- **历史兼容** — 自动修补会话事件词汇表，第三方插件写入的事件不破坏会话历史
+- **双源更新** — 官方 agent 更新 + 客户端自更新（GitHub / Gitee 双源，分片自动合并、原地替换；Windows 安装版/便携版与 macOS（.app 替换）均支持客户端自更新，其它平台从 Releases 手动下载新版）
+- **快捷方式自愈** — 桌面与开始菜单快捷方式缺失即自动补建
+- **云端构建** — 推 tag 即触发 GitHub Actions 自动打包发布（见下）
 
-   merge.bat 说明：脚本使用纯英文提示 + Windows 标准 CRLF 行尾，不依赖代码页切换；合并完成后窗口会停在 `pause` 等待按键，不会一闪而过。若出现 `[MISSING]` / `[FAILED]`，请确认分片下载完整后重试。
+## 📸 界面一览
 
-   不想用 merge.bat？在 CMD 中手动合并：
+![DSH Desktop 界面](https://cdn.jsdelivr.net/gh/myYangyunfan/dsh_desktop@main/docs/showcase.png)
 
-   ```cmd
-   :: 便携版
-   copy /b DSH-Desktop-0.3.3-portable-x64.exe.part1 + DSH-Desktop-0.3.3-portable-x64.exe.part2 DSH-Desktop-0.3.3-portable-x64.exe
+**开箱即用**（原生 dsh web）vs **DSH Desktop**：
 
-   :: 安装版
-   copy /b DSH-Desktop-Setup-0.3.3-x64.exe.part1 + DSH-Desktop-Setup-0.3.3-x64.exe.part2 DSH-Desktop-Setup-0.3.3-x64.exe
-   ```
-
-### 国际用户（GitHub，单文件下载）
-
-> GitHub 无单文件大小限制，可直接下载完整安装包。
-
-| 文件 | 说明 | 大小 |
+| 能力 | 原生 `dsh web` | DSH Desktop |
 | --- | --- | --- |
-| [便携版 exe](https://github.com/myYangyunfan/dsh_desktop/releases/latest/download/DSH-Desktop-0.3.3-portable-x64.exe) | 免安装，双击即用 | ~126 MB |
-| [安装版 exe](https://github.com/myYangyunfan/dsh_desktop/releases/latest/download/DSH-Desktop-Setup-0.3.3-x64.exe) | 安装到系统，创建快捷方式 | ~126 MB |
+| 启动 | 手动安装 Node.js、敲命令 | 双击即用，内置独立运行时 |
+| 界面 | 浏览器标签页 | 桌面原生窗口 · 深色玻璃无边框 |
+| 会话管理 | 仅归档 | 归档 / 恢复 / 删除 |
+| 余额 | 无 | 实时「本轮费用 · 余额」+ OpenCode Go |
+| 桌面能力 | 无 | 托盘常驻 / 完成通知 / 桌面宠物 / 侧边浮窗 |
+| 更新 | 手动 | 自动更新（Windows 版）· 分片自动合并 |
 
-**首次使用**：双击运行后会显示启动动画，随后进入 DeepSeek Harness Web UI。如尚未配置 API Key，在界面内完成配置即可开始使用（与命令行 dsh 完全一致）。
+## 🚀 快速开始
 
-> 便携版数据目录在 exe 旁的 `data\`；安装版在 `%APPDATA%\DSH Desktop\`。
-> 想强制指定 DSH 配置目录？启动前设置环境变量 `DSH_HOME` 即可。
+**系统要求**：Windows 10 / 11（x64 / arm64）或 macOS 12+（Intel / Apple Silicon），无需预装 Node.js。ARM 设备（如 Surface Pro X）请下载 arm64 版本。
 
-## 功能一览
+### 国内用户（Gitee）
 
-- **免装 Node**：内置独立 Node 运行时与 npm CLI，目标机器无需安装 Node.js
-- **内置 dsh CLI**：完整打包 `@deepseek-ai/dsh` 及全部插件，离线可用
-- **一键启动**：双击即启动 `dsh web`，优先复用上次端口（被占用时自动换新端口），就绪后加载到原生窗口；稳定 origin 让会话分组等界面偏好可以持久记住
-- **风格化无边框窗口 + 系统托盘**：无原生标题栏/菜单栏，自绘玻璃栏（圆角图标、⋯ 菜单、窗口控制），Win11 圆角；关闭默认隐藏到托盘
-- **退出即清理**：退出应用自动结束 dsh 进程树，不留孤儿进程
-- **便携版**：数据跟随 exe 所在目录，拷到 U 盘就能用
-- **与 CLI 共享配置**：默认沿用 `DSH_HOME`（通常是 `~\.dsh`），已有会话/API Key 直接生效
-- **双重自动更新**：官方 dsh agent 更新（npm overlay）+ 客户端封装自更新（GitHub/Gitee 双源、分片自动合并、原地替换重启），均经用户同意
-- **插件升级兼容**：更新只升级内置配套插件（余额、终端、独立窗口等），**不会覆盖你自行添加的第三方插件**，`cordis.patch.yml` 里你自己加的条目原样保留
-- **快捷方式自动维护**：便携版自动创建/修复桌面与开始菜单快捷方式
-- **DeepSeek 余额小部件**：对话底部统计栏显示「本轮 ¥X · 余额 ¥Y」，点击跳转充值
-- **文件更改追踪 + 一键还原**：详情面板「文件」标签页查看本会话全部文件改动（行级 diff）并逐文件/全部还原，数据只读复用会话日志，稳定不受升级影响
-- **会话完成通知**：agent 任务跑完时弹 Windows 系统通知，点击回到窗口
-- **内置 10 款社区皮肤**：设置 → 皮肤 浏览切换（blue-fantasy / dragon-heir / maid-atelier / miku / minecraft / qq98 / ths / trading / whale-song / xp）；M3 皮肤首次启动默认启用
-- **侧边栏 GitGraph**：VSCode 风格分支地图概览，自动识别外层 + 内层双仓库并支持一键切换
-- **推理强度滑块**：Claude 风格动画 + HanaAyane chibi runner 拇指形象
+> Gitee 单文件限制 100 MB，安装包拆为 3 个分片，全部下载后双击 `merge.bat` 自动合并。
+>
+> **分片沿用旧命名**（不含 `win-` 前缀，如 `...-portable-x64.exe.part1`），与 GitHub 新命名格式不同，不影响合并使用。
+>
+> macOS 安装包暂未同步到 Gitee，请从 [GitHub Releases](https://github.com/myYangyunfan/dsh_desktop/releases) 下载。
 
- - **隐藏对话输出**：设置 → 通用设置 →「隐藏对话输出」，隐藏大量工具调用、工具结果与思考过程，每一轮的最终总结输出仍然显示
- - **会话导航滑轨**：对话右侧的虚化滑轨随会话长度变化；每条用户输入在滑轨上以圆点标出位置，悬停时在鼠标位置显示垂直短横线预览，点击才跳转
-- **便携版解压缓存**：首次解压后缓存到 `%TEMP%\dsh-desktop-portable`，后续启动秒开，不再每次解压 132MB / 2.4 万文件
-- **启动自愈与看门狗**：自动修复 profile 符号链接损坏导致的 `dsh web` 退出码 1；主进程异常退出时自动拉起并发送恢复通知
-- **识图插件 dsh-vision**：设置页直接填写 OpenAI 兼容 VLM 的 API 地址、密钥和模型，会话中即可使用 `view_image` 工具（OCR / 看图 / 读图表），默认智谱免费 `glm-4.6v-flash`
- - **渲染进程崩溃自愈**：页面崩溃/假死时指数退避自动重载，连续失败第 3 次重建窗口；超过上限显示本地恢复页（重新加载 / 重启客户端 / 打开日志），并弹系统通知
-- **会话历史兼容补丁**：打包时自动修补内置 `@deepseek-ai/dsh-session` 事件词汇表，插件（dsh-agent-teams / dsh-message-edit / dsh-web-search-exa）写入的会话事件不再导致历史无法打开
-- **内置 3 个 Agent 预设**：`anchored-standard`（显示名「官pro」）、`v4-flash-godmode-opencode-go`（显示名「goflash」）、`router-standard`（显示名「router-standard」）
-- **内置 dsh-routing-suite**：`dsh-super-injector`（dev_* 插件注入/热重载/自愈工具）+ `router-standard` 预设
-- **内置 dsh-anchored-standard**：`anchored-standard`（显示名「官pro」）预设
+| 版本 | 分片下载 |
+| --- | --- |
+| **便携版**（免安装，双击即用） | [part1](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/DSH-Desktop-0.3.9-portable-x64.exe.part1) · [part2](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/DSH-Desktop-0.3.9-portable-x64.exe.part2) · [part3](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/DSH-Desktop-0.3.9-portable-x64.exe.part3) |
+| **安装版**（创建快捷方式） | [part1](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/DSH-Desktop-Setup-0.3.9-x64.exe.part1) · [part2](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/DSH-Desktop-Setup-0.3.9-x64.exe.part2) · [part3](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/DSH-Desktop-Setup-0.3.9-x64.exe.part3) |
 
-- **余额提示开关**：chrome 菜单「显示余额/本轮费用」可一键关闭，第三方中转用户不再被余额提示打扰
-- **第三方模型思考强度默认安全**：`reasoning_effort` 注入默认关闭，仅 provider 支持时手动开启，避免百炼等严格 API 报参数错误
-- **插件市场**：支持 npm 包名与 `github:owner/repo#分支` 安装第三方插件，安装后重启服务生效
+合并工具：[merge.bat](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/merge.bat) · 校验：[SHA256SUMS](https://gitee.com/my-yang-yunfan/dsh_desktop/releases/download/v0.3.9/SHA256SUMS)
 
+### 国际用户（GitHub）
 
-## 系统要求
+[GitHub Releases](https://github.com/myYangyunfan/dsh_desktop/releases) 提供完整单文件安装包（便携版 + 安装版 + blockmap），无大小限制，直接下载。
 
-- Windows 10/11（x64）
-- 无需预装 Node.js 或任何其他运行时
+> [!IMPORTANT]
+> **下载前必看 —— 安装包名字里就写着答案：**
+>
+> - **`win-` = Windows，`macos-` = macOS**（`.exe` 一定是 Windows，`.dmg` / `.zip` 一定是 macOS）；
+> - **`x64` = Intel/AMD 芯片，`arm64` = ARM 芯片**（Windows ARM 设备如 Surface Pro X、Apple Silicon Mac 选 arm64，其余一律选 x64）。
+>
+> 按你的设备直接挑：
 
-## 从源码构建
+| 你的设备 | 下载 |
+| --- | --- |
+| 💻 Windows 电脑（绝大多数 Intel/AMD） | `DSH-Desktop-<版本>-win-portable-x64.exe`（免安装，双击即用）或 `-win-setup-x64.exe`（安装版，建快捷方式） |
+| 🪟 Windows ARM（如 Surface Pro X） | `DSH-Desktop-<版本>-win-portable-arm64.exe` |
+| 🍎 Mac Intel | `DSH-Desktop-<版本>-macos-x64.dmg` |
+| 🍏 Mac Apple Silicon（M1/M2/M3/M4） | `DSH-Desktop-<版本>-macos-arm64.dmg` |
+
+macOS 版暂未签名，Apple Silicon 首次打开会提示「无法验证开发者」——请**右键点击 App → 打开**，或终端执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/DSH Desktop.app"
+```
+
+**数据位置**：Windows 便携版在 exe 旁 `data\`；安装版在 `%APPDATA%\DSH Desktop\`。macOS 在 `~/Library/Application Support/DSH Desktop/`。设置环境变量 `DSH_HOME` 可强制指定 dsh 配置目录。
+
+## 💬 社区交流
+
+遇到问题、想反馈建议或与其他用户交流？欢迎加入 QQ 交流群（群号 **926561802**）：
+
+![QQ 交流群](https://cdn.jsdelivr.net/gh/myYangyunfan/dsh_desktop@main/docs/qq-group-qr.png)
+
+## 🛠 从源码构建
 
 ```powershell
 cd dsh-desktop
 npm install
 npm run fetch-runtime    # 内置 node.exe + npm CLI
-npm run dist             # 构建 portable + NSIS 安装包 → dist/
+npm run dist             # 构建 portable + NSIS（x64）→ dist/
+npm run dist:arm64       # 交叉构建 arm64（x64 构建机自动补装 arm64 预编译原生模块）
+# macOS（需在 macOS 上执行，x64 / arm64 二选一）：
+npm run dist:mac -- --x64     # 构建 macOS x64 dmg + zip
+npm run dist:mac -- --arm64   # 构建 macOS arm64 dmg + zip
 ```
 
-> 网络受限时：Electron 镜像 `$env:ELECTRON_MIRROR='https://npmirror.com/mirrors/electron/'`；打包工具链镜像 `$env:ELECTRON_BUILDER_BINARIES_MIRROR='https://npmirror.com/mirrors/electron-builder-binaries/'`。
+网络受限时：`$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'`，`$env:ELECTRON_BUILDER_BINARIES_MIRROR='https://npmmirror.com/mirrors/electron-builder-binaries/'`。
 
-## 架构
+## 🤖 自动发布
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  Electron 壳 (main.js)                                   │
-│  · 单实例锁 / 窗口 / 菜单 / 生命周期                       │
-│  · 会话完成监听 (session-watcher.js) → 系统通知            │
-│  · 官方更新 (updater.js) → 用户同意后安装 overlay          │
-│  · spawn vendor|resources 里的 node.exe                   │
-└──────────────┬───────────────────────────────────────────┘
-               │  dsh web --host 127.0.0.1 --port <上次保存的端口>
-               ▼
-       内置 node.exe + @deepseek-ai/dsh
-       路径解析：用户目录 overlay > 内置包
-       输出 "dsh web: http://127.0.0.1:<port>"
-               │  解析 URL，轮询 HTTP 200
-               ▼
-       原生窗口加载 Web UI（仅本机回环访问）
+GitHub Actions 流水线（`.github/workflows/release.yml`）：推 `v*` tag 自动在云端构建 **Windows x64 + arm64**（portable + NSIS）与 **macOS x64 + arm64**（dmg + zip，Apple Silicon runner 交叉构建）并上传 Release，无需本地构建。
+
+```bash
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
-## 连接 WSL 里的 dsh（WSL 托管模式）
+## 🧩 内置插件生态
 
-壳支持两种后端：`local`（内置 dsh，默认）、`wsl`（壳在 WSL 里安装并更新自己的 dsh），用 `settings.json` 的 `backend` 或环境变量 `DSH_DESKTOP_BACKEND` 选择。
+随安装包分发（完整第三方组件清单见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）：
 
-- **wsl（托管）**：设置页「WSL 后端」栏（或 `settings.json` 的 `backend` / 环境变量 `DSH_DESKTOP_BACKEND`）选 `wsl` 后，壳首次启动在 WSL 内 `npm install` 一套自己的 dsh（默认目录 `~/.dsh-desktop`，可配置；要求 WSL 内有 node/npm），每次启动自动同步配套插件与内置 Agent 预设并启动、连接；**agent 自动更新、回退、插件市场重启全部闭环**，体验等同本地模式。转发不通时在 `.wslconfig` 启用 `networkingMode=mirrored`。详见 `dsh-desktop/README.md`。
-- 自己在 WSL 里另装了 dsh（checkout 开发版/npm 版）想用上壳的配套插件与内置 Agent 预设？在 WSL 里跑 `node dsh-desktop/scripts/sync-companion-plugins.js ~/.dsh --with-patches`（未自动找到 dsh 包时加 `--dsh-package <包目录>`），重启 `dsh web` 生效。
+| 插件 | 说明 | 来源 |
+| --- | --- | --- |
+| `dsh-session-manager` | 会话归档 / 恢复 / 删除管理 | 内置 |
+| `dsh-better-sidebar` | 侧边栏增强 | [omdsh-dev/DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) |
+| `dsh-super-injector` | 开发注入 / 热重载工具链 | @dsh-external 社区 |
+| `dsh-vision` | OpenAI 兼容识图（OCR / 看图 / 读图表） | @dsh-external 社区 |
+| `dsh-side-session` | 侧边会话浮窗，三档上下文 | [hzhz314159/dsh-side-session](https://github.com/hzhz314159/dsh-side-session) |
+| `billion-context-dsh` | 上下文压缩（compaction）增强 | [Tyan66666/billion-context-dsh](https://github.com/Tyan66666/billion-context-dsh) |
+| `dsh-navbar` | 导航栏替换 | [vlln/dsh-navbar](https://github.com/vlln/dsh-navbar) |
+| `dsh-hub` | 插件中枢：更新引擎 / 全局记忆 / 图谱与市场挂载 | [ARFCON/dsh-hub-DSH](https://github.com/ARFCON/dsh-hub-DSH) |
+| `harness-pet` | 桌面宠物 | [cakeni/harness-pet](https://github.com/cakeni/harness-pet) |
+| `dsh-gitgraph` | 侧边栏 GitGraph 分支地图（内外双仓库切换） | 内置 |
+| `dsh-skin-switch` | 设置页「皮肤」tab：列出并切换内置皮肤 | 内置 |
+| `dsh-client-ui-effort-slider` | 推理强度滑块（chibi runner 形象） | 内置 |
 
-## 目录结构
+## 🏗 架构
 
 ```
-dsh-desktop/
-├── main.js               # Electron 主进程
-├── updater.js            # 官方更新引擎
-├── session-watcher.js    # 会话完成监听
-├── preload.js            # 沙箱预加载
-├── assets/               # 加载页、更新进度页、图标
-├── scripts/              # 构建与开发辅助脚本
-├── build/icon.png        # electron-builder 图标
-├── vendor/               # 内置 node.exe / npm CLI（不入库）
-├── electron-builder.yml  # 打包配置
-└── dist/                 # 构建产物（不入库）
+┌─────────────────────────────────────────────────────┐
+│  Electron 壳 (main.js)                              │
+│  · 单实例锁 / 无边框窗口 / 托盘 / 生命周期            │
+│  · 会话完成监听 (session-watcher.js) → 系统通知       │
+│  · 官方更新 (updater.js) → 用户同意后安装 overlay     │
+│  · spawn 内置 node（Windows 为 node.exe）             │
+└──────────────────┬──────────────────────────────────┘
+                   │  dsh web --host 127.0.0.1 --port <复用端口>
+                   ▼
+        内置 node + @deepseek-ai/dsh
+        路径解析：用户目录 overlay > 内置包
+                   │  轮询 HTTP 200
+                   ▼
+        原生窗口加载 Web UI（仅本机回环访问）
 ```
 
-## 第三方开源组件
-
-本项目使用、引用或分发了若干第三方开源组件。完整清单（含许可证与来源，共 772 个组件）见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
-
-其中随安装包分发的第三方社区 dsh 插件：
-
-| 插件 | 许可证 | 来源 |
-|---|---|---|
-| `dsh-better-sidebar` | MIT | [omdsh-dev/DSH-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) |
-| `@dsh-external/dsh-super-injector` | BSD-3-Clause | @dsh-external 社区 |
-| `@dsh-external/dsh-vision` | BSD-3-Clause | @dsh-external 社区 |
-| `@dsh-external/dsh-side-session` | MIT | [hzhz314159/dsh-side-session](https://github.com/hzhz314159/dsh-side-session) |
-| `billion-context-dsh` | MIT | [Tyan66666/billion-context-dsh](https://github.com/Tyan66666/billion-context-dsh) |
-| `dsh-navbar` | MIT | [vlln/dsh-navbar](https://github.com/vlln/dsh-navbar) |
-| `harness-pet` | MIT | [cakeni/harness-pet](https://github.com/cakeni/harness-pet) |
-| `zat-dsh-engine` | MIT | [mishibeikejie/zat-dsh-engine](https://github.com/mishibeikejie/zat-dsh-engine) |
-
-随安装包分发的第三方社区 Agent 预设（`dsh-desktop/assets/agent-presets/`）：
-
-| 预设 | 许可证 | 来源 |
-|---|---|---|
-| `router-standard` | MIT | [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite) |
-| `anchored-standard` / `zero-anchored-standard` | MIT | [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) |
-| `v4-flash-godmode-opencode-go` | MIT | [SheberDavid/v4-flash-godmode-opencode-go](https://github.com/SheberDavid/v4-flash-godmode-opencode-go) |
-| `warmupbetter` / `warmupbetter-replay` | MIT | [0liveiraaa/myDshPresets](https://github.com/0liveiraaa/myDshPresets) |
-
-底层运行时依赖（Electron、zod、ws、schemastery、koffi、zstddec 等）与全部间接依赖的许可证声明，均在上述清单文件中。
-
-## License
+## 📄 License
 
 MIT。基于 [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)（MIT）。
+
+---
+
+⭐ 如果 DSH Desktop 帮到了你，欢迎 [点个 Star](https://github.com/myYangyunfan/dsh_desktop) 支持我们；使用中遇到任何问题，请到 [Issues](https://github.com/myYangyunfan/dsh_desktop/issues) 反馈。

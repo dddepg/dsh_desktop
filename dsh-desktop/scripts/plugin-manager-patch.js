@@ -23,14 +23,21 @@ function yamlQuote(s) {
   return "'" + String(s).replace(/'/g, "''") + "'";
 }
 
-// 顶层用户层条目（缩进 0-2 空格）+ 全部续行（含行尾换行）。
+// 顶层用户层条目（缩进 0-2 空格）+ 完整子树（含行尾换行）。
+// 子树用非贪婪 [\s\S]*? 匹配，并用「下一同级 - id: / - insert: / 注释 / 文件尾」
+// 前瞻收口，避免贪婪续行组把同一 insert 块内后续兄弟条目一并吞掉（issue #66）。
+// id 边界用负向断言 (?![ \t]*[A-Za-z0-9_.-])：\b 在连字符/点后不是合法 YAML
+// 词边界（terminal\b 会误中 terminal-tab），旧断言对空格放过会让 `foo` 误中
+// `- id: foo bar`（issue #100）。仅禁止水平空白后紧跟 id 字符，保留换行作为
+// 合法终止符、`foo  # 注释` 尾随空白仍可命中。
 function topLevelEntryRe(id) {
-  return new RegExp('(?:^|\\n)([ \\t]{0,2})- id:\\s*' + escRegExp(id) + '\\b[^\\n]*\\n(?:[ \\t]+[^\\n]*\\n)*', 'g');
+  return new RegExp('(?:^|\\n)([ \\t]{0,2})- id:\\s*' + escRegExp(id) + '(?![ \\t]*[A-Za-z0-9_.-])[^\\n]*\\n([\\s\\S]*?)(?=(?:\\n[ \\t]{0,2}- id:)|(?:\\n[ \\t]{0,2}- insert:)|(?:\\n#)|\\s*$)', 'g');
 }
 
-// insert 块内的内层条目（缩进 >= 4）+ 续行（含行尾换行）。
+// insert 块内的内层条目（缩进 >= 4）+ 完整子树（含行尾换行）。
+// 同 topLevelEntryRe：非贪婪子树 + 下一同级/上级条目或文件尾前瞻收口。
 function insertInnerEntryRe(id) {
-  return new RegExp('(?:^|\\n)[ \\t]+- id:\\s*' + escRegExp(id) + '\\b[^\\n]*\\n(?:[ \\t]+[^\\n]*\\n)*', 'g');
+  return new RegExp('(?:^|\\n)[ \\t]+- id:\\s*' + escRegExp(id) + '(?![ \\t]*[A-Za-z0-9_.-])[^\\n]*\\n([\\s\\S]*?)(?=(?:\\n[ \\t]+- id:)|(?:\\n[ \\t]{0,2}- id:)|(?:\\n[ \\t]{0,2}- insert:)|\\s*$)', 'g');
 }
 
 // 本模块写入的标记注释行（整行，含行尾换行）。
@@ -38,6 +45,73 @@ function insertInnerEntryRe(id) {
 // 不会被「消费型行首锚点」隔行跳过（那是注释堆积自愈失效的根因）。
 function markerCommentRe(id) {
   return new RegExp('(?:^|(?<=\\n))# [^\\n]*关闭 ' + escRegExp(id) + '[^\\n]*(?:\\n|$)', 'g');
+}
+
+// 卸载标记注释行（整行，含行尾换行）。
+function uninstallCommentRe(id) {
+  return new RegExp('(?:^|(?<=\\n))# [^\\n]*卸载 ' + escRegExp(id) + '[^\\n]*(?:\\n|$)', 'g');
+}
+
+/**
+ * 卸载/恢复标记手术：
+ *   卸载 —— 同「关闭」的登记点手术（移出 insert 块、孤儿块清理、确保顶层条目
+ *           disabled: true），再在顶层条目补 `removed: true`（本模块的卸载标记，
+ *           同步器据此跳过文件复制，避免下次启动「复活」）。
+ *   恢复 —— 移除 removed 行；无 config 则整个条目移除（配套插件下次启动由
+ *           同步器重新 insert + 复制文件；基础层插件由基础 patch 重新提供）。
+ * @param {string} text    cordis.patch.yml 原文
+ * @param {string} id      插件 id
+ * @param {boolean} removed true=卸载，false=恢复
+ * @param {string} [name]  包名（追加新条目时使用）
+ */
+function setPluginRemoved(text, id, removed, name) {
+  if (typeof text !== 'string') throw new TypeError('text must be a string');
+  if (typeof id !== 'string' || !id) throw new TypeError('id must be a non-empty string');
+  if (!ID_RE.test(id)) throw new TypeError('id 含非法字符（仅允许字母/数字/下划线/点/连字符）: ' + id);
+  let out = text;
+  const pkgName = typeof name === 'string' && name ? name : id;
+
+  if (removed) {
+    // 1) 与禁用同款：移出 insert 块 + 孤儿块清理
+    out = out.replace(insertInnerEntryRe(id), (m) => (m[0] === '\n' ? '\n' : ''));
+    out = out.replace(/(?:^|\n)- insert:\s*\n(?![ \t]+-)/g, (m) => (m[0] === '\n' ? '\n' : ''));
+    // 2) 顶层条目：确保 disabled: true + removed: true
+    const topRe = topLevelEntryRe(id);
+    if (topRe.test(out)) {
+      topRe.lastIndex = 0;
+      out = out.replace(topRe, (block) => {
+        if (!/(?:^|\n)[ \t]{0,2}removed\s*:/.test(block)) {
+          block = block.replace(/\n$/, '') + '\n  removed: true\n';
+        }
+        if (!/(?:^|\n)[ \t]{0,2}disabled\s*:/.test(block)) {
+          if (/(?:^|\n)[ \t]{0,2}name\s*:/.test(block)) {
+            block = block.replace(/(?:\n[ \t]{0,2}name\s*:[^\n]*)/, (m) => m + '\n  disabled: true');
+          } else {
+            block = block.replace(/\n$/, '') + '\n  disabled: true\n';
+          }
+        }
+        return block;
+      });
+    } else {
+      // 先清历史遗留注释（恢复/卸载反复操作不堆积），再追加「注释 + 条目」
+      out = out.replace(uninstallCommentRe(id), '');
+      out = out.replace(markerCommentRe(id), '');
+      const block = '\n# 插件管理（设置页「插件」栏）：卸载 ' + id + '\n- id: ' + id + '\n  name: ' + yamlQuote(pkgName) + '\n  disabled: true\n  removed: true\n';
+      out = out.replace(/\s*$/, '') + block;
+    }
+    return out;
+  }
+
+  // 恢复：移除 removed/disabled 行；无 config 则整个条目移除（含卸载注释）
+  out = out.replace(topLevelEntryRe(id), (m) => {
+    const withoutFlags = m
+      .replace(/\n[ \t]{0,2}removed\s*:\s*true[^\n]*/g, '')
+      .replace(/\n[ \t]{0,2}disabled\s*:\s*(?:true|false)[^\n]*/g, '');
+    if (/(?:^|\n)[ \t]{0,2}config\s*:/.test(withoutFlags)) return withoutFlags;
+    return m[0] === '\n' ? '\n' : '';
+  });
+  out = out.replace(uninstallCommentRe(id), '');
+  return out;
 }
 
 /**
@@ -93,4 +167,4 @@ function togglePluginInPatch(text, id, enabled, name) {
   return out;
 }
 
-module.exports = { togglePluginInPatch };
+module.exports = { togglePluginInPatch, setPluginRemoved };

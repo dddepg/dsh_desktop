@@ -5,7 +5,8 @@
 // electron-builder's file copier strips nested node_modules directories from
 // extraResources, but the bundled npm CLI needs its own bundled deps
 // (graceful-fs, semver, ...). Copy vendor/npm verbatim into the packed app
-// after packaging; both the portable and NSIS targets then archive this copy.
+// after packaging (Windows: <appOutDir>/resources, macOS: <appOutDir>/
+// Contents/Resources); the target installers/archives then carry this copy.
 //
 // Also prunes pure-redundant files out of the packed app to shrink install
 // size/time WITHOUT touching anything that runs:
@@ -19,8 +20,11 @@ const path = require('node:path');
 
 // Portable cache patch must be applied before electron-builder compiles the
 // NSIS portable target; doing it here covers direct `electron-builder` runs,
-// not just `npm run dist`.
-require('./patch-portable-template');
+// not just `npm run dist`. Windows-only: the portable.nsi template only
+// exists in the Windows target pipeline.
+if (process.platform === 'win32') {
+  require('./patch-portable-template');
+}
 
 // Patch the bundled dsh-session event vocabulary so plugin events
 // (dsh-agent-teams / dsh-message-edit / dsh-web-search-exa) are accepted by
@@ -31,6 +35,10 @@ const { installBuiltinPresets } = require('./install-minimal-win-preset');
 const { patchWebSearchBaseUrl } = require('./patch-web-search-baseurl');
 const { patchMenuViewport } = require('./patch-menu-viewport');
 const { patchSessionManage } = require('./patch-session-manage');
+const { patchOpenProjectDir } = require('./patch-open-project-dir');
+const { patchSessionPersistence } = require('./patch-session-persistence');
+const { patchSlotCompat } = require('./patch-slot-compat');
+const { patchToolSourceCompat } = require('./lib/tool-source-patch');
 
 // Regexes for files that are safe to delete (pure metadata / dev artifacts).
 const DROP_BASENAME = /^(LICENSE.*|README.*|CHANGELOG.*|HISTORY.*|COPYING.*|NOTICE.*|AUTHORS.*|SECURITY.*|CONTRIBUTING.*|\.gitignore|\.npmignore|\.editorconfig|\.eslintrc.*|\.prettierrc.*|\.babelrc.*)$/i;
@@ -64,11 +72,20 @@ function pruneDroppable(root) {
   return removed;
 }
 
+// Resources directory inside the packed app: Windows keeps it at
+// <appOutDir>/resources, macOS inside the .app bundle at
+// <appOutDir>/Contents/Resources.
+function resourcesDir(appOutDir, platform = process.platform) {
+  return platform === 'darwin'
+    ? path.join(appOutDir, 'Contents', 'Resources')
+    : path.join(appOutDir, 'resources');
+}
+
 module.exports = async function afterPack(context) {
   const { appOutDir, electronPlatformName } = context;
-  if (electronPlatformName !== 'win32') return;
+  const res = resourcesDir(appOutDir, electronPlatformName);
   const src = path.resolve(__dirname, '..', 'vendor', 'npm');
-  const dest = path.join(appOutDir, 'resources', 'npm');
+  const dest = path.join(res, 'npm');
   if (fs.existsSync(src)) {
     fs.rmSync(dest, { recursive: true, force: true });
     fs.cpSync(src, dest, { recursive: true });
@@ -83,7 +100,7 @@ module.exports = async function afterPack(context) {
   // plugin deps verbatim so bundled plugins with private dependencies (e.g.
   // billion-context-dsh's acp-kernel) resolve inside the packed app; the
   // runtime profile sync then carries them into the web profile.
-  const pluginRoot = path.join(appOutDir, 'resources', 'app', 'assets', 'plugins');
+  const pluginRoot = path.join(res, 'app', 'assets', 'plugins');
   if (fs.existsSync(pluginRoot)) {
     for (const rel of fs.readdirSync(pluginRoot)) {
       const srcNm = path.resolve(__dirname, '..', 'assets', 'plugins', rel, 'node_modules');
@@ -98,7 +115,7 @@ module.exports = async function afterPack(context) {
   // Prune redundant files from the packed app (resources/app/...) and the
   // bundled npm CLI (resources/npm/...). Runtime files are never removed.
   const targets = [
-    path.join(appOutDir, 'resources', 'app'),
+    path.join(res, 'app'),
     dest,
   ].filter((p) => fs.existsSync(p));
   let total = 0;
@@ -107,7 +124,7 @@ module.exports = async function afterPack(context) {
 
   // Patch the packaged dsh-session vocabulary in the packed app (idempotent).
   // Runs after pruning so the .js files it modifies are the final copies.
-  const sessionPkgDir = path.join(appOutDir, 'resources', 'app', 'node_modules',
+  const sessionPkgDir = path.join(res, 'app', 'node_modules',
     '@deepseek-ai', 'dsh-session');
   if (fs.existsSync(path.join(sessionPkgDir, 'lib', 'index.js'))) {
     const changed = patchDshSessionVocabulary(sessionPkgDir);
@@ -116,19 +133,19 @@ module.exports = async function afterPack(context) {
     console.warn('afterPack: bundled dsh-session not found — vocabulary patch skipped');
   }
 
-  // Ship the desktop's built-in agent presets in the bundled dsh CLI (idempotent).
-  const dshPkgDir = path.join(appOutDir, 'resources', 'app', 'node_modules', '@deepseek-ai', 'dsh');
+  // Ship the desktop's minimal_win preset in the bundled dsh CLI (idempotent).
+  const dshPkgDir = path.join(res, 'app', 'node_modules', '@deepseek-ai', 'dsh');
   if (fs.existsSync(path.join(dshPkgDir, 'package.json'))) {
     const presetDirs = installBuiltinPresets(dshPkgDir);
     console.log(`afterPack: builtin presets installed (${presetDirs.length}): ${presetDirs.map((p) => path.basename(p)).join(", ")}`);
   } else {
-    console.warn('afterPack: bundled dsh package not found — built-in presets skipped');
+    console.warn('afterPack: bundled dsh package not found — minimal-win preset skipped');
   }
 
   // Patch the bundled dsh-web-search-deepseek baseURL handling (issue #20,
   // idempotent). Runs after pruning so the .js files it modifies are the final
   // copies; the same implementation is re-applied at boot for the overlay copy.
-  const appNm = path.join(appOutDir, 'resources', 'app', 'node_modules');
+  const appNm = path.join(res, 'app', 'node_modules');
   if (fs.existsSync(appNm)) {
     const wsChanged = patchWebSearchBaseUrl(appNm, (m) => console.log('afterPack: ' + m));
     console.log(`afterPack: web-search baseURL ${wsChanged > 0 ? `patched (${wsChanged} files)` : 'already up to date'}`);
@@ -139,7 +156,16 @@ module.exports = async function afterPack(context) {
     // client-connection / client-ui-workspace）。
     const smChanged = patchSessionManage(appNm, (m) => console.log('afterPack: ' + m));
     console.log(`afterPack: session manage ${smChanged > 0 ? `patched (${smChanged} files)` : 'already up to date'}`);
+    // issue #85: 侧栏项目/会话行「打开项目目录」+ 右键菜单（dsh-client-ui-workspace）。
+    const odChanged = patchOpenProjectDir(appNm, (m) => console.log('afterPack: ' + m));
+    console.log(`afterPack: open project dir ${odChanged > 0 ? 'patched' : 'already up to date'}`);
+    const spChanged = patchSessionPersistence(appNm, (m) => console.log('afterPack: ' + m));
+    console.log(`afterPack: session torn-tail recovery ${spChanged > 0 ? 'patched' : 'already up to date'}`);
+    const tsChanged = patchToolSourceCompat(appNm, (m) => console.log('afterPack: ' + m));
+    console.log(`afterPack: empty tool-call tolerance ${tsChanged > 0 ? 'patched' : 'already up to date'}`);
+    const skChanged = patchSlotCompat(appNm, (m) => console.log('afterPack: ' + m));
+    console.log(`afterPack: keyed slot compatibility ${skChanged > 0 ? 'patched' : 'already up to date'}`);
   } else {
-    console.warn('afterPack: bundled app node_modules not found — web-search baseURL / menu viewport / session manage patch skipped');
+    console.warn('afterPack: bundled app node_modules not found — web-search baseURL / menu viewport / session manage / open project dir / session recovery / slot compatibility patches skipped');
   }
 };

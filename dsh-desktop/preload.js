@@ -11,7 +11,7 @@
 //      "dsh-balance-changed" 事件，供 dsh-balance 插件消费。
 //   3. 把 Web UI 内容下移 36px（body padding-top），保证自绘栏不遮挡界面。
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const BAR_ID = '__dsh_desktop_chrome__';
 const BAR_HEIGHT = 36;
@@ -23,6 +23,21 @@ const FLOAT_BAR_HEIGHT = 24;
 // legacy dshDesktop.appVersion field working).
 // ---------------------------------------------------------------------------
 
+// 会话完成通知点击跳转：主进程把 sessionId 推到渲染层。页面插件尚未就绪时
+// 保留最后一次 jump，等订阅方注册后再补发，避免错过通知点击。
+let notificationJumpListener = null;
+let pendingNotificationJump = null;
+
+ipcRenderer.on('dsh:notification-jump', (_event, payload) => {
+  const sessionId = payload && typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+  if (!sessionId || sessionId.length > 256) return;
+  const jump = Object.freeze({ sessionId });
+  if (notificationJumpListener) {
+    try { notificationJumpListener(jump); } catch {}
+  } else {
+    pendingNotificationJump = jump;
+  }
+});
 const dshDesktop = {
   appVersion: '', // 由 chrome:init 回填；旧字段保持存在
   windowControls: {
@@ -37,10 +52,23 @@ const dshDesktop = {
     },
   },
   menu: {
-    action: (action, payload) => ipcRenderer.invoke('chrome:menu', { action, ...payload }),
+    action: (action, payload) => ipcRenderer.invoke('chrome:menu', { ...(payload || {}), action }),
   },
   getInfo: () => ipcRenderer.invoke('chrome:init'),
   refreshBalance: () => ipcRenderer.invoke('dsh:balance-refresh'),
+  // 会话完成通知点击跳转：页面插件订阅后，主进程通知点击事件会推送 sessionId。
+  onNotificationJump: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    notificationJumpListener = cb;
+    if (pendingNotificationJump) {
+      const payload = pendingNotificationJump;
+      pendingNotificationJump = null;
+      try { cb(payload); } catch {}
+    }
+    return () => {
+      if (notificationJumpListener === cb) notificationJumpListener = null;
+    };
+  },
   // WSL 后端配置（设置页 dsh-wsl-settings 插件消费）。
   wsl: {
     getConfig: () => ipcRenderer.invoke('dsh:wsl-config'),
@@ -57,6 +85,17 @@ const dshDesktop = {
   openExternal: (url) => ipcRenderer.invoke('dsh:open-external', { url }),
   // 复制文本到剪贴板（更新源地址等）。
   copyText: (text) => ipcRenderer.invoke('dsh:copy-text', { text }),
+  // 拖入文件（dsh-file-drop）：取浏览器 File 对象的完整磁盘路径
+  // （webUtils.getPathForFile，仅 Electron 环境；浏览器打开 WebUI 时返回空串，
+  // 插件自动降级为可读提示）。
+  getPathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
+  },
+  // 图片粘贴（dsh-image-paste）：把剪贴板图片存到临时目录
+  // （%TEMP%/dsh-paste/），返回 { ok, path, size } 供 agent 读取。
+  imagePaste: {
+    save: (payload) => ipcRenderer.invoke('dsh:image-paste-save', payload),
+  },
   // 赞助二维码：读取支付宝/微信收款码（data URI）。
   sponsorQr: () => ipcRenderer.invoke('dsh:sponsor-qr'),
   // 赞助小窗：打开独立「请作者喝咖啡」窗口（主进程单例）。
@@ -68,10 +107,28 @@ const dshDesktop = {
   },
   // 插件管理（设置页「插件」页「管理」标签，dsh-plugin-manager 插件消费）：
   // 列出插件 / 开关写入 web profile cordis.patch.yml 的用户层 disabled 条目
-  // （完全退出并重启应用生效）。
+  // （完全退出并重启应用生效）；卸载/恢复/检查更新/更新。
   pluginManager: {
     list: () => ipcRenderer.invoke('dsh:plugin-list'),
     setEnabled: (id, enabled) => ipcRenderer.invoke('dsh:plugin-set-enabled', { id, enabled }),
+    uninstall: (id) => ipcRenderer.invoke('dsh:plugin-uninstall', { id }),
+    restore: (id) => ipcRenderer.invoke('dsh:plugin-restore', { id }),
+    checkUpdates: () => ipcRenderer.invoke('dsh:plugin-check-updates'),
+    update: (id) => ipcRenderer.invoke('dsh:plugin-update', { id }),
+  },
+  // 诊断与备份/恢复（设置页「诊断与管理」分区）：诊断只读分析；
+  // 备份导出/恢复经系统对话框选路径，恢复前校验 + 原子写 + 失败回滚；
+  // 日志包导出 / 防砖体检 / bundle 顺序检测与应用。
+  diagBackup: {
+    runDiagnostics: () => ipcRenderer.invoke('dsh:diag-run'),
+    exportBackup: (label) => ipcRenderer.invoke('dsh:backup-export', { label }),
+    previewRestore: () => ipcRenderer.invoke('dsh:backup-restore', { preview: true }),
+    restore: (token) => ipcRenderer.invoke('dsh:backup-restore', { preview: false, token }),
+    exportDiagnostics: () => ipcRenderer.invoke('dsh:diag-export'),
+    validatePlugins: () => ipcRenderer.invoke('dsh:diag-validate'),
+    removeBundle: (names) => ipcRenderer.invoke('dsh:diag-remove-bundle', { names }),
+    analyzeOrder: () => ipcRenderer.invoke('dsh:diag-order'),
+    applyOrder: (order) => ipcRenderer.invoke('dsh:diag-order-apply', { order }),
   },
   // 桌面宠物原生小窗（harness-pet）：主窗控制开关/状态查询/最小化自动弹出
   // 上报；小窗内关闭自身/搬窗（绝对目标位置）。
@@ -271,7 +328,7 @@ function renderMenu() {
   if (!menuEl) return;
   menuEl.innerHTML = `
     <div class="dch-mh">
-      <div class="dch-mh-title">DSH Desktop <span style="font-weight:400;color:var(--dsw-alias-label-tertiary)">v${esc(state.appVersion)}</span></div>
+      <div class="dch-mh-title">DSH Desktop JXZ <span style="font-weight:400;color:var(--dsw-alias-label-tertiary)">v${esc(state.appVersion)}</span></div>
       <div class="dch-mh-sub"><span>agent v${esc(state.agentVersion)}</span><span>${esc(state.agentSource)}</span></div>
     </div>
     <button class="dch-item" data-act="check-agent-update">检查 dsh 更新…</button>
@@ -300,20 +357,20 @@ function renderMenu() {
     <div class="dch-sep"></div>
     <button class="dch-item" data-act="sponsor">☕ 请作者喝咖啡</button>
     <div class="dch-sep"></div>
-    <button class="dch-item" data-act="about">关于 DSH Desktop</button>
+    <button class="dch-item" data-act="about">关于 DSH Desktop JXZ</button>
     <button class="dch-item" data-danger="1" data-act="quit">退出</button>`;
   menuEl.querySelectorAll('.dch-item').forEach((item) => {
     item.addEventListener('click', async () => {
       const act = item.dataset.act;
       if (act === 'toggle-notify' || act === 'toggle-close-to-tray' || act === 'toggle-balance') {
-        const next = await dshDesktop.menu.action(act);
+        const next = await dshDesktop.menu.action(act).catch(() => null);
         if (next) state = { ...state, ...next };
         renderMenu();
         return;
       }
       closeMenu();
       if (act === 'sponsor') { dshDesktop.sponsorWindow(); return; }
-      dshDesktop.menu.action(act);
+      dshDesktop.menu.action(act).catch(() => {});
     });
   });
   // 更新源复制按钮
@@ -323,7 +380,7 @@ function renderMenu() {
       const kind = btn.dataset.copy;
       const url = state.repoUrls && (kind === 'github' ? state.repoUrls.github : state.repoUrls.gitee);
       if (!url) return;
-      const r = await dshDesktop.copyText(url);
+      const r = await dshDesktop.copyText(url).catch(() => null);
       if (r && r.ok) {
         const prev = btn.textContent;
         btn.textContent = '已复制 ✓';
@@ -409,7 +466,7 @@ function injectChrome() {
   bar.innerHTML = `
     <div class="dch-left">
       <img class="dch-icon" alt="" draggable="false" />
-      <span class="dch-title">DSH Desktop</span>
+      <span class="dch-title">DSH Desktop JXZ</span>
       <span class="dch-badge" hidden></span>
     </div>
     <div class="dch-right">
@@ -443,6 +500,8 @@ function injectChrome() {
   dshDesktop.getInfo().then((info) => {
     if (!info) return;
     state = { ...state, ...info };
+    // 回填旧字段 dshDesktop.appVersion（bridge 注释声明的契约，此前漏实现）。
+    if (typeof info.appVersion === 'string' && info.appVersion) dshDesktop.appVersion = info.appVersion;
     if (info.appVersion) badge.textContent = 'v' + info.appVersion;
     if (info.agentVersion) badge.title = 'agent v' + info.agentVersion + '（' + info.agentSource + '）';
     if (info.agentVersion) { badge.hidden = false; }
@@ -489,7 +548,6 @@ function m3ApplyTheme(enabled) {
     document.body.removeAttribute(M3_THEME_ATTR);
     document.documentElement.removeAttribute(M3_THEME_ATTR);
   }
-  window.dispatchEvent(new CustomEvent('m3-theme-change', { detail: { enabled } }));
 }
 
 function m3ToggleTheme() {
@@ -875,17 +933,16 @@ function m3InitTheme() {
     });
   }
   
-  // 暴露 API
-  window.__m3Theme = {
-    isEnabled: () => m3ThemeEnabled,
-    toggle: m3ToggleTheme,
-    set: (v) => { m3SavePreference(v); m3ApplyTheme(v); m3UpdateAllButtons(); },
-  };
+  // 对外 API：contextIsolation 下 preload 的 window 与页面 window 是不同
+  // JS 对象，直接赋值 window.__m3Theme 页面不可见（历史死代码，已移除）。
+  // 主题仅通过 DOM（data-m3-theme 属性 + 设置页按钮）驱动，无需桥接 API。
 }
 
-// 初始化 M3 主题
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', m3InitTheme);
-} else {
-  m3InitTheme();
+// 初始化 M3 主题（宠物小窗只显示鲸鱼动画，跳过主题注入）
+if (!PET_MODE) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', m3InitTheme);
+  } else {
+    m3InitTheme();
+  }
 }

@@ -2,7 +2,7 @@
 // 单元测试：scripts/plugin-manager-patch.js（cordis.patch.yml 用户层 disabled 开关）
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { togglePluginInPatch } = require('../plugin-manager-patch');
+const { togglePluginInPatch, setPluginRemoved } = require('../plugin-manager-patch');
 
 const FIXTURE = [
   '# dsh web profile patch（由 DSH Desktop 维护）',
@@ -152,4 +152,126 @@ test('自愈：历史遗留的多条重复注释在下次禁用时收敛为一�
   const out = togglePluginInPatch(messy, 'balance', false, '@deepseek-ai/dsh-balance');
   assert.equal(commentCount(out, 'balance'), 1, '四条历史注释收敛为一条');
   assert.equal(countId(out, 'balance'), 1, '且只有一份条目');
+});
+
+// --- 卸载/恢复 --------------------------------------------------------------
+
+function removedCount(text) {
+  return (text.match(/removed\s*:\s*true/g) || []).length;
+}
+
+test('卸载：insert 块条目移出，顶层条目带 disabled + removed 标记', () => {
+  const out = setPluginRemoved(FIXTURE, 'terminal', true, '@deepseek-ai/dsh-terminal-tab');
+  assert.ok(!out.includes('    - id: terminal'), '应已从 insert 块移除');
+  assert.equal(countId(out, 'terminal'), 1, '全文件只保留一个登记点');
+  assert.equal(removedCount(out), 1, '恰好一个 removed: true');
+  assert.match(out, /- id: terminal[\s\S]*disabled: true[\s\S]*removed: true/);
+  assert.ok(!out.includes('- insert:\n\n'), '被掏空的 insert 块应被清理');
+});
+
+test('卸载：重复卸载幂等', () => {
+  const once = setPluginRemoved(FIXTURE, 'balance', true, '@deepseek-ai/dsh-balance');
+  const twice = setPluginRemoved(once, 'balance', true, '@deepseek-ai/dsh-balance');
+  assert.equal(once, twice);
+});
+
+test('恢复：移除 removed/disabled，无 config 条目整体消失（等待启动同步恢复）', () => {
+  const removed = setPluginRemoved(FIXTURE, 'terminal', true, '@deepseek-ai/dsh-terminal-tab');
+  const out = setPluginRemoved(removed, 'terminal', false);
+  assert.equal(countId(out, 'terminal'), 0, '条目已移除');
+  assert.equal(removedCount(out), 0, 'removed 标记已清');
+});
+
+test('恢复：带 config 的条目只清标记，config 保留', () => {
+  const withConfig = FIXTURE.replace('  config:\n', '  removed: true\n  disabled: true\n  config:\n');
+  const out = setPluginRemoved(withConfig, 'web', false);
+  assert.ok(out.includes('- id: web'));
+  assert.ok(out.includes('  config:'));
+  assert.ok(out.includes('    searchProvider: opencode-mcp'));
+  assert.equal(removedCount(out), 0, 'removed 行已移除');
+  assert.ok(!out.includes("name: '@deepseek-ai/dsh-web'\n  disabled: true"), 'disabled 行已移除');
+});
+
+test('卸载→恢复→卸载 往返不堆积注释', () => {
+  let t = FIXTURE;
+  t = setPluginRemoved(t, 'balance', true, '@deepseek-ai/dsh-balance');
+  t = setPluginRemoved(t, 'balance', false);
+  t = setPluginRemoved(t, 'balance', true, '@deepseek-ai/dsh-balance');
+  assert.equal(commentCount(t, 'balance'), 0, '卸载注释');
+  assert.ok((t.match(/卸载 balance/g) || []).length <= 1, '卸载注释至多一条');
+  assert.equal(countId(t, 'balance'), 1);
+  assert.equal(removedCount(t), 1);
+});
+
+test('issue #66: 关闭一个插件不吞掉同 insert 块内的兄弟条目', () => {
+  const src = [
+    '- insert:',
+    '    - id: terminal',
+    '      name: terminal',
+    '    - id: file-changes',
+    '      name: file-changes',
+    '',
+  ].join('\n');
+  const out = togglePluginInPatch(src, 'terminal', false);
+  assert.equal(countId(out, 'file-changes'), 1, '兄弟条目 file-changes 必须保留');
+  assert.equal(countId(out, 'terminal'), 1, 'terminal 顶层 disabled 条目保留');
+  assert.ok(out.includes('disabled: true'), 'terminal 被禁用');
+});
+
+test('issue #66: 关闭 terminal 不误改前缀匹配的 terminal-tab（\b 缺陷）', () => {
+  const src = [
+    '- insert:',
+    '    - id: terminal-tab',
+    '      name: terminal-tab',
+    '',
+  ].join('\n');
+  const out = togglePluginInPatch(src, 'terminal', false);
+  assert.equal(countId(out, 'terminal-tab'), 1, 'terminal-tab 必须原样保留');
+});
+
+test('issue #100: id「foo」不误中带后缀的「- id: foo bar」条目（边界放宽到空白后）', () => {
+  const src = [
+    '# 历史遗留的非法条目（id 含空白）',
+    '- id: foo bar',
+    '  name: legacy-foo-bar',
+    '',
+  ].join('\n');
+  const out = togglePluginInPatch(src, 'foo', false, '@scope/foo');
+  // foo bar 不是 foo：原条目必须原样保留，不得被误删/误改
+  assert.ok(out.includes('- id: foo bar'), 'foo bar 条目必须原样保留');
+  assert.ok(out.includes('  name: legacy-foo-bar'), 'foo bar 的 name 行必须保留');
+  assert.ok(!out.includes('- id: foo bar\n  disabled'), '不得把 disabled 写到 foo bar 条目上');
+  // foo 的禁用条目作为新顶层条目追加
+  assert.match(out, /- id: foo\s*\n\s*name: '@scope\/foo'\s*\n\s*disabled: true/);
+  assert.equal((out.match(/(?:^|\n)[ \t]{0,2}- id: foo[ \t]*(?:\n|$)/g) || []).length, 1, 'foo 自身只登记一处');
+});
+
+test('issue #100: 顶层含空格的非标 id（foo bar）不被 foo 命中误改', () => {
+  const src = [
+    '- id: foo bar',
+    '  name: Foo Bar',
+    '  config: {}',
+    '',
+  ].join('\n');
+  const out = togglePluginInPatch(src, 'foo', false);
+  // foo bar 条目块必须原样保留（文件开头即该条目，未被插入 disabled）
+  assert.ok(out.startsWith('- id: foo bar\n  name: Foo Bar\n  config: {}\n'), 'foo bar 条目原样保留');
+  // foo 自己的新顶层 disabled 条目正常追加
+  assert.ok(out.includes('- id: foo'), 'foo 条目正常登记');
+});
+
+test('issue #100: insert 内层含空格的非标 id（foo bar）不被 foo 命中误删', () => {
+  const src = [
+    '- insert:',
+    '    - id: foo',
+    '      name: foo',
+    '    - id: foo bar',
+    '      name: fb',
+    '',
+  ].join('\n');
+  const out = togglePluginInPatch(src, 'foo', false);
+  assert.ok(!out.includes('    - id: foo\n'), 'foo 内层条目被移出（正常）');
+  assert.ok(out.includes('    - id: foo bar\n'), 'foo bar 内层条目必须保留');
+  // 顶层登记点恰一个（注意 countId 的 \b 会把 foo bar 误计，这里用行级精确断言）
+  assert.equal((out.match(/^- id: foo\s*$/m) || []).length, 1, 'foo 顶层 disabled 条目保留');
 });

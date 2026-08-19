@@ -11,8 +11,9 @@
 //   2. @deepseek-ai/dsh-host-apiproxy    —— 新增两个 RPC：
 //        · workspace.unarchiveSession    恢复归档（域变更自动广播
 //          host/archived-sessions-changed，客户端实时恢复显示）；
-//        · workspace.deleteSession       删除：拒绝运行中会话 → 按 jsonl
-//          布局移除会话目录 → 清理归档集合 → 广播 session/disposed
+//        · workspace.deleteSession       删除：拒绝运行中会话（实时查询
+//          ctx.agents 注册表，宿主权威状态）→ 按 jsonl 布局移除会话目录 →
+//          清理归档集合 → 广播 session/disposed
 //          （各监听者按 session 对象身份做 Map 操作，合成 {id} 事件安全，
 //          客户端实时收到 host/session-removed 移除行）。
 //   3. @deepseek-ai/dsh-client-connection —— workspace API 面 + unary 响应
@@ -29,6 +30,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// 原子写与 main.js / 其它补丁脚本共用同一实现（scripts/lib/patch-io.js）。
+const { writeFileAtomic } = require('./lib/patch-io');
 
 const MARKER = 'dsh-desktop patch (session manage)';
 
@@ -56,13 +59,15 @@ const HOST_IMPORT_JOIN_ANCHOR = 'import { dirname, extname } from "node:path";';
 const HOST_IMPORT_JOIN_NEW = 'import { dirname, extname, join } from "node:path";';
 
 const HOST_API_ANCHOR = 'return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] });\n\t\t\t}';
-const HOST_API_INSERT = 'return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] });\n\t\t\t},\n\t\t\tasync unarchiveSession(request) {\n\t\t\t\tconst { sessionId } = request.payload;\n\t\t\t\tawait ctx.workspaceRegistry.unarchiveSession(sessionId);\n\t\t\t\treturn ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] });\n\t\t\t},\n\t\t\tasync deleteSession(request) {\n\t\t\t\tconst { sessionId } = request.payload;\n\t\t\t\t// 拒绝「正在运行」的会话（agent 活跃时写路径会重建目录，删除不安全）。\n\t\t\t\tif (dshSessionRunningState.get(sessionId) === true) {\n\t\t\t\t\treturn err(request, {\n\t\t\t\t\t\tcode: "session-running",\n\t\t\t\t\t\tmessage: "cannot delete a running session: stop it first",\n\t\t\t\t\t\tdetails: { sessionId }\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\ttry {\n\t\t\t\t\t// 会话目录布局（dsh-session-persistence-jsonl 约定，注入时同步复制）：\n\t\t\t\t\t// <sessionsRoot>/<projectKey(cwd)>/<encodeSegment(id)>/ 。\n\t\t\t\t\tconst headers = await ctx.get("sessionPersistence").list();\n\t\t\t\t\tconst header = headers.find((entry) => entry && entry.id === sessionId);\n\t\t\t\t\tif (header !== void 0) {\n\t\t\t\t\t\tconst encodeSeg = (raw) => {\n\t\t\t\t\t\t\tif (raw === ".") return "~002E";\n\t\t\t\t\t\t\tif (raw === "..") return "~002E~002E";\n\t\t\t\t\t\t\tlet out = "";\n\t\t\t\t\t\t\tfor (let i = 0; i < raw.length; i++) {\n\t\t\t\t\t\t\t\tconst code = raw.charCodeAt(i);\n\t\t\t\t\t\t\t\tconst ch = String.fromCharCode(code);\n\t\t\t\t\t\t\t\tif (ch !== "~" && /^[A-Za-z0-9._-]$/.test(ch)) out += ch;\n\t\t\t\t\t\t\t\telse out += "~" + code.toString(16).toUpperCase().padStart(4, "0");\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\treturn out;\n\t\t\t\t\t\t};\n\t\t\t\t\t\tconst projectKeyOf = (cwd) => {\n\t\t\t\t\t\t\tlet readable = "";\n\t\t\t\t\t\t\tlet separatorRun = false;\n\t\t\t\t\t\t\tfor (let i = 0; i < cwd.length; i++) {\n\t\t\t\t\t\t\t\tconst code = cwd.charCodeAt(i);\n\t\t\t\t\t\t\t\tconst ch = String.fromCharCode(code);\n\t\t\t\t\t\t\t\tif (ch === "/" || ch === "\\\\" || ch === ":") {\n\t\t\t\t\t\t\t\t\tif (!separatorRun) readable += "-";\n\t\t\t\t\t\t\t\t\tseparatorRun = true;\n\t\t\t\t\t\t\t\t} else if (ch !== "~" && /^[A-Za-z0-9._-]$/.test(ch)) {\n\t\t\t\t\t\t\t\t\treadable += ch;\n\t\t\t\t\t\t\t\t\tseparatorRun = false;\n\t\t\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\t\t\treadable += "~" + code.toString(16).toUpperCase().padStart(4, "0");\n\t\t\t\t\t\t\t\t\tseparatorRun = false;\n\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\treturn `--${(readable.replace(/^-+/, "") || "root").slice(0, 251)}--`;\n\t\t\t\t\t\t};\n\t\t\t\t\t\tconst root = dshHomePath("sessions");\n\t\t\t\t\t\tconst dir = join(root, header.cwd === void 0 ? "_no-cwd" : projectKeyOf(header.cwd), encodeSeg(sessionId));\n\t\t\t\t\t\tawait rm(dir, { recursive: true, force: true });\n\t\t\t\t\t}\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (!(error instanceof WorkspaceUnknownSessionError)) throw error;\n\t\t\t\t}\n\t\t\t\t// 摘除 live 注册表（优雅 flush + 释放持久化状态 + session/disposed\n\t\t\t\t// 广播 → 客户端实时收到 session-removed）；非 live 则广播合成移除帧。\n\t\t\t\tconst removed = ctx.sessions.remove(sessionId);\n\t\t\t\tif (!removed) ctx.emit("session/disposed", { id: sessionId });\n\t\t\t\t// 清理归档集合（含陈旧归档项）。\n\t\t\t\tawait ctx.workspaceRegistry.unarchiveSession(sessionId);\n\t\t\t\treturn ok(request, { deleted: true });\n\t\t\t}';
+const HOST_API_INSERT = 'return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] });\n\t\t\t},\n\t\t\tasync unarchiveSession(request) {\n\t\t\t\tconst { sessionId } = request.payload;\n\t\t\t\tawait ctx.workspaceRegistry.unarchiveSession(sessionId);\n\t\t\t\treturn ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] });\n\t\t\t},\n\t\t\tasync deleteSession(request) {\n\t\t\t\tconst { sessionId } = request.payload;\n\t\t\t\t// 拒绝「正在运行」的会话（agent 活跃时写路径会重建目录，删除不安全）。\n\t\t\t\t// 实时查询 agents 注册表（宿主权威状态，与 sessions.list 的 running 同源）：\n\t\t\t\t// 早期版本用 agent/status 事件边沿缓存，但事件是边沿触发 —— 页面重载等\n\t\t\t\t// 无流连接窗口会永久错过状态边沿：漏判会让运行中会话被删成孤儿（agent\n\t\t\t\t// 继续向已移除会话推流，renderer 输入状态污染到其他会话）；卡 true 则让\n\t\t\t\t// 已停止会话的删除被反复误拒。\n\t\t\t\tif (ctx.agents.get(sessionId)?.status === "running") {\n\t\t\t\t\treturn err(request, {\n\t\t\t\t\t\tcode: "session-running",\n\t\t\t\t\t\tmessage: "cannot delete a running session: stop it first",\n\t\t\t\t\t\tdetails: { sessionId }\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\ttry {\n\t\t\t\t\t// 会话目录布局（dsh-session-persistence-jsonl 约定，注入时同步复制）：\n\t\t\t\t\t// <sessionsRoot>/<projectKey(cwd)>/<encodeSegment(id)>/ 。\n\t\t\t\t\tconst headers = await ctx.get("sessionPersistence").list();\n\t\t\t\t\tconst header = headers.find((entry) => entry && entry.id === sessionId);\n\t\t\t\t\tif (header !== void 0) {\n\t\t\t\t\t\tconst encodeSeg = (raw) => {\n\t\t\t\t\t\t\tif (raw === ".") return "~002E";\n\t\t\t\t\t\t\tif (raw === "..") return "~002E~002E";\n\t\t\t\t\t\t\tlet out = "";\n\t\t\t\t\t\t\tfor (let i = 0; i < raw.length; i++) {\n\t\t\t\t\t\t\t\tconst code = raw.charCodeAt(i);\n\t\t\t\t\t\t\t\tconst ch = String.fromCharCode(code);\n\t\t\t\t\t\t\t\tif (ch !== "~" && /^[A-Za-z0-9._-]$/.test(ch)) out += ch;\n\t\t\t\t\t\t\t\telse out += "~" + code.toString(16).toUpperCase().padStart(4, "0");\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\treturn out;\n\t\t\t\t\t\t};\n\t\t\t\t\t\tconst projectKeyOf = (cwd) => {\n\t\t\t\t\t\t\tlet readable = "";\n\t\t\t\t\t\t\tlet separatorRun = false;\n\t\t\t\t\t\t\tfor (let i = 0; i < cwd.length; i++) {\n\t\t\t\t\t\t\t\tconst code = cwd.charCodeAt(i);\n\t\t\t\t\t\t\t\tconst ch = String.fromCharCode(code);\n\t\t\t\t\t\t\t\tif (ch === "/" || ch === "\\\\" || ch === ":") {\n\t\t\t\t\t\t\t\t\tif (!separatorRun) readable += "-";\n\t\t\t\t\t\t\t\t\tseparatorRun = true;\n\t\t\t\t\t\t\t\t} else if (ch !== "~" && /^[A-Za-z0-9._-]$/.test(ch)) {\n\t\t\t\t\t\t\t\t\treadable += ch;\n\t\t\t\t\t\t\t\t\tseparatorRun = false;\n\t\t\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\t\t\treadable += "~" + code.toString(16).toUpperCase().padStart(4, "0");\n\t\t\t\t\t\t\t\t\tseparatorRun = false;\n\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\treturn `--${(readable.replace(/^-+/, "") || "root").slice(0, 251)}--`;\n\t\t\t\t\t\t};\n\t\t\t\t\t\tconst root = dshHomePath("sessions");\n\t\t\t\t\t\tconst dir = join(root, header.cwd === void 0 ? "_no-cwd" : projectKeyOf(header.cwd), encodeSeg(sessionId));\n\t\t\t\t\t\tawait rm(dir, { recursive: true, force: true });\n\t\t\t\t\t}\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (!(error instanceof WorkspaceUnknownSessionError)) throw error;\n\t\t\t\t}\n\t\t\t\t// 摘除 live 注册表（优雅 flush + 释放持久化状态 + session/disposed\n\t\t\t\t// 广播 → 客户端实时收到 session-removed）；非 live 则广播合成移除帧。\n\t\t\t\tconst removed = ctx.sessions.remove(sessionId);\n\t\t\t\tif (!removed) ctx.emit("session/disposed", { id: sessionId });\n\t\t\t\t// 清理归档集合（含陈旧归档项）。\n\t\t\t\tawait ctx.workspaceRegistry.unarchiveSession(sessionId);\n\t\t\t\t// 从所属工作区的 sessionIds 中摘除并持久化——否则 workspace.json 的\n\t\t\t\t// workspaces.<id>.sessionIds 会残留已删除会话引用，磁盘状态与运行时\n\t\t\t\t// 状态不一致（issue #82）。用原始 record 判定（sessionIds getter 会按\n\t\t\t\t// 已删除会话的 host 路径过滤，看不到残留项）。\n\t\t\t\tfor (const ws of ctx.workspaceRegistry.list()) {\n\t\t\t\t\tif (ws.record && Array.isArray(ws.record.sessionIds) && ws.record.sessionIds.includes(sessionId)) {\n\t\t\t\t\t\tawait ws.detachSession(sessionId);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\treturn ok(request, { deleted: true });\n\t\t\t}';
 
-// 模块级：每会话最近一次 agent 运行状态（删除守卫用；agent/status 事件维护）。
+// 旧版（已废弃）：事件边沿缓存运行状态的两段插入。早期版本以此做删除守卫，
+// 因边沿丢失（页面重载窗口）两个方向都出过事故，守卫已改为实时查询
+// ctx.agents；下列常量仅作为升级规则锚点，把旧版补丁文件回退到官方原文。
 const HOST_MAP_ANCHOR = 'import { release } from "node:os";';
 const HOST_MAP_INSERT = 'import { release } from "node:os";\n// dsh-desktop patch (session manage): 每会话最近一次 agent 运行状态（删除守卫用）。\nconst dshSessionRunningState = /* @__PURE__ */ new Map();';
 
-// host 流里的 agent/status 监听器：同步维护运行状态表。
+// 旧版（已废弃）：host 流 agent/status 监听器里的缓存写入行，升级时回退官方。
 const HOST_STATUS_ANCHOR = 'ctx.on("agent/status", ({ agent, status }) => {\n\t\t\t\t\t\tqueue.push(frame({\n\t\t\t\t\t\t\ttype: "host/session-status",\n\t\t\t\t\t\t\tsessionId: agent.id,\n\t\t\t\t\t\t\trunning: status === "running"\n\t\t\t\t\t\t}));\n\t\t\t\t\t}),';
 const HOST_STATUS_INSERT = 'ctx.on("agent/status", ({ agent, status }) => {\n\t\t\t\t\t\tif (agent && agent.id) dshSessionRunningState.set(agent.id, status === "running");\n\t\t\t\t\t\tqueue.push(frame({\n\t\t\t\t\t\t\ttype: "host/session-status",\n\t\t\t\t\t\t\tsessionId: agent.id,\n\t\t\t\t\t\t\trunning: status === "running"\n\t\t\t\t\t\t}));\n\t\t\t\t\t}),';
 
@@ -88,11 +93,11 @@ const CONN_FACADE_INSERT = 'archiveSession: (payload, signal) => this.callUnary(
 // 4. dsh-client-ui-workspace：会话行菜单「删除对话」+ 翻译
 // ---------------------------------------------------------------------------
 const UI_MENU_ANCHOR = '{\n\t\t\t\t\tid: "archive",\n\t\t\t\t\tlabel: t("menu.archiveSession"),\n\t\t\t\t\ticon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconArchiveOutline20, { size: 16 })\n\t\t\t\t}\n\t\t\t];';
-const UI_MENU_INSERT = '{\n\t\t\t\t\tid: "archive",\n\t\t\t\t\tlabel: t("menu.archiveSession"),\n\t\t\t\t\ticon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconArchiveOutline20, { size: 16 })\n\t\t\t\t},\n\t\t\t\t// dsh-desktop patch (session manage): 归档下方增加删除。\n\t\t\t\t{\n\t\t\t\t\tid: "delete",\n\t\t\t\t\tlabel: t("menu.deleteSession")\n\t\t\t\t}\n\t\t\t];';
+const UI_MENU_INSERT = '{\n\t\t\t\t\tid: "archive",\n\t\t\t\t\tlabel: t("menu.archiveSession"),\n\t\t\t\t\ticon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconArchiveOutline20, { size: 16 })\n\t\t\t\t},\n\t\t\t\t// dsh-desktop patch (session manage): 归档下方增加删除。\n\t\t\t\t// 桥 window.__dshSessionManager 由 dsh-session-manager 插件提供；桥缺失\n\t\t\t\t// 时隐藏「删除对话」项（显式降级，而非可选链静默无反应）。\n\t\t\t\t...(window.__dshSessionManager && typeof window.__dshSessionManager.deleteSession === "function" ? [{\n\t\t\t\t\tid: "delete",\n\t\t\t\t\tlabel: t("menu.deleteSession")\n\t\t\t\t}] : [])\n\t\t\t];';
 // 旧版补丁（v1：当前会话行不显示删除）→ 升级为无条件显示（用户反馈当前会话
-// 行的 ⋯ 菜单里看不到删除按钮）。
+// 行的 ⋯ 菜单里看不到删除按钮）。v2 起改为按桥可见性显示（桥缺失隐藏）。
 const UI_MENU_UPGRADE_ANCHOR = '...(node.id !== currentId ? [{\n\t\t\t\t\tid: "delete",\n\t\t\t\t\tlabel: t("menu.deleteSession")\n\t\t\t\t}] : [])';
-const UI_MENU_UPGRADE_INSERT = '{\n\t\t\t\t\tid: "delete",\n\t\t\t\t\tlabel: t("menu.deleteSession")\n\t\t\t\t}';
+const UI_MENU_UPGRADE_INSERT = '...(window.__dshSessionManager && typeof window.__dshSessionManager.deleteSession === "function" ? [{\n\t\t\t\t\tid: "delete",\n\t\t\t\t\tlabel: t("menu.deleteSession")\n\t\t\t\t}] : [])';
 
 const UI_SELECT_ANCHOR = 'if (id === "archive") onArchive(node.id);';
 const UI_SELECT_INSERT = 'if (id === "archive") onArchive(node.id);\n\t\t\t\t\t\t\t\t\tif (id === "delete") window.__dshSessionManager?.deleteSession(node.id);';
@@ -105,7 +110,7 @@ const UI_EN_INSERT = '"menu.archiveSession": "Archive session",\n\t\t\t"menu.del
 // ---------------------------------------------------------------------------
 // 工具：在文件中做「锚点必须存在 + 标记幂等」的替换
 // ---------------------------------------------------------------------------
-function applyReplacements(file, replacements, upgradeRules, log) {
+function applyReplacements(file, replacements, upgradeRules, log, stats, options) {
   let src;
   try {
     src = fs.readFileSync(file, 'utf8');
@@ -125,7 +130,11 @@ function applyReplacements(file, replacements, upgradeRules, log) {
     }
     if (upgraded) {
       try {
-        fs.writeFileSync(file, src, 'utf8');
+        if (options && options.dryRun) {
+          log('session-manage 补丁: dry-run: 将升级 ' + file);
+          return false; // dryRun 不落盘，不计为已写
+        }
+        writeFileAtomic(file, src);
         log('session-manage 补丁: 已升级 ' + file);
         return true;
       } catch (err) {
@@ -139,13 +148,18 @@ function applyReplacements(file, replacements, upgradeRules, log) {
   for (const { anchor, insert } of replacements) {
     if (!src.includes(anchor)) {
       log('session-manage 补丁: 锚点未匹配（dsh 版本可能已变化），跳过 ' + file + ' :: ' + anchor.slice(0, 60));
+      if (stats) stats.anchorMissing += 1;
       return false;
     }
     src = src.replace(anchor, insert);
   }
   src = '// ' + MARKER + ': 对话删除/归档管理运行时补丁\n' + src;
   try {
-    fs.writeFileSync(file, src, 'utf8');
+    if (options && options.dryRun) {
+      log('session-manage 补丁: dry-run: 将应用 ' + file);
+      return false; // dryRun 不落盘，不计为已写
+    }
+    writeFileAtomic(file, src);
     log('session-manage 补丁: 已应用 ' + file);
     return true;
   } catch (err) {
@@ -160,7 +174,7 @@ function applyReplacements(file, replacements, upgradeRules, log) {
  * @param {(msg: string) => void} [log]
  * @returns {number} 实际发生修改的文件数
  */
-function patchSessionManage(nmRoot, log = () => {}) {
+function patchSessionManage(nmRoot, log = () => {}, stats, options) {
   const targets = [
     {
       file: path.join(nmRoot, '@deepseek-ai', 'dsh-workspace', 'lib', 'index.js'),
@@ -175,11 +189,18 @@ function patchSessionManage(nmRoot, log = () => {}) {
       replacements: [
         { anchor: HOST_IMPORT_ANCHOR, insert: HOST_IMPORT_NEW },
         { anchor: HOST_IMPORT_JOIN_ANCHOR, insert: HOST_IMPORT_JOIN_NEW },
-        { anchor: HOST_MAP_ANCHOR, insert: HOST_MAP_INSERT },
         { anchor: HOST_API_ANCHOR, insert: HOST_API_INSERT },
         { anchor: HOST_SCHEMA_ANCHOR, insert: HOST_SCHEMA_INSERT },
         { anchor: HOST_HANDLER_ANCHOR, insert: HOST_HANDLER_INSERT },
-        { anchor: HOST_STATUS_ANCHOR, insert: HOST_STATUS_INSERT },
+      ],
+      upgradeRules: [
+        // 旧版缓存守卫 → 实时查询（本仓库 issue：删除运行中会话后其他会话
+        // 输入锁死 / 重载后已停止会话删除被反复误拒，两个方向同根因）。
+        { anchor: 'if (dshSessionRunningState.get(sessionId) === true) {',
+          insert: 'if (ctx.agents.get(sessionId)?.status === "running") {' },
+        // 旧版事件缓存维护点回退到官方原文（新装不再插入）。
+        { anchor: HOST_STATUS_INSERT, insert: HOST_STATUS_ANCHOR },
+        { anchor: HOST_MAP_INSERT, insert: HOST_MAP_ANCHOR },
       ],
     },
     {
@@ -206,7 +227,7 @@ function patchSessionManage(nmRoot, log = () => {}) {
   let changed = 0;
   for (const t of targets) {
     if (!fs.existsSync(t.file)) continue;
-    if (applyReplacements(t.file, t.replacements, t.upgradeRules || [], log)) changed += 1;
+    if (applyReplacements(t.file, t.replacements, t.upgradeRules || [], log, stats, options)) changed += 1;
   }
   return changed;
 }

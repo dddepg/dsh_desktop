@@ -11,6 +11,7 @@ DeepSeek Harness（dsh）的 Windows 桌面客户端：内置独立 Node 运行�
 > 热修复版：插件市场装插件后「服务意外退出」崩溃事故根治（三层防线）+ 空 tool-call 存量会话打不开修复。
 
 ### 修复
+- **WSL 检测失败崩溃修复**：`wsl.exe -l -q` 在个别 wsl.exe 版本/管道场景下输出**无 BOM 的 UTF-16LE**，旧解码只认 BOM（`FF FE`），发行版名带着空字节进入 `spawn` args，直接抛 `The argument 'args[1]' must be a string without null bytes. Received 'U\x00b\x00u\x00n\x00t\x00u\x00\r\x00'`。修复：解码层按「utf8 解码残留空字节 → 改按 UTF-16LE 重解」特征识别无 BOM UTF-16LE（GBK 帮助文本等无空字节输出仍走 utf8，两种形态均保留）；解析层兜底剥离控制字符/空字节，任何情况下都不让带空字节的串进入 spawn args。附单测覆盖无 BOM UTF-16LE 解码与残留空字节剥离
 - **移除 Router J-Space 实验预设**：`router-jspace` 预设目录删除，并加入 `RETIRED_BUILTIN_PRESET_DIRS`（更新/重装时自动清理老包里已装的该预设）；README / CHANGELOG / 第三方声明 / 预设清单文档同步收敛为当前 3 个内置预设
 - **会话详情「终端」黑底黑字修复**：终端复用 dsh-better-sidebar 的 xterm 组件（`acrylic` 深色玻璃模式）时，现强制深色调色板（前景 `#d4d4d4`、ANSI dark 16 色、光标与选择色配套），浅色主题下不再出现黑字贴黑底
 - **推理强度滑块 chibi 图框修复**：`data-glow`（High 及以上档）不再用不透明渐变背景盖住动画——原实现渐变随强度加深直至完全遮住精灵图（"方形图框"），改为透明背景透出 chibi 跑步动画 + 等级色柔光；同时去掉常驻的方形投影与聚焦时的 inset 高光线

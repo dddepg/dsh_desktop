@@ -121,18 +121,28 @@ internals.runWsl = function runWsl(cmd, { timeoutMs = 20 * 60 * 1000, onLine } =
 };
 
 /**
- * 解码 `wsl.exe -l -q` 输出。真实输出是 UTF-16LE（带 BOM）；个别环境（未
- * 安装任何发行版 / wsl.exe 不可用）会输出按当前 ANSI 代码页（中文系统
- * GBK）编码的帮助文本且无 BOM——旧实现把无 BOM 输出也硬按 UTF-16LE 解码，
+ * 解码 `wsl.exe -l -q` 输出。真实输出是 UTF-16LE（通常带 BOM，个别 wsl.exe
+ * 版本在管道输出时省略 BOM——此时 ASCII 字符解码成 <char>\x00 对，utf8 解码
+ * 必然残留空字节，按此特征改走 UTF-16LE 重解）；无 BOM 且无空字节的输出按
+ * UTF-8 处理（未安装任何发行版 / wsl.exe 不可用时会输出按当前 ANSI 代码页
+ * （中文系统 GBK）编码的帮助文本——旧实现把无 BOM 输出硬按 UTF-16LE 解码，
  * 得到乱码「发行版名」，configure 拿着乱码名继续执行后续命令全部失败，
- * 且「未检测到 WSL 发行版」的正确提示永远走不到。
+ * 且「未检测到 WSL 发行版」的正确提示永远走不到；后来只认 BOM 又漏掉了
+ * 无 BOM UTF-16LE 形态，发行版名带空字节进入 spawn args 直接抛
+ * "The argument 'args[1]' must be a string without null bytes"）。
  * @param {Buffer} buf wsl.exe stdout
  * @returns {string} 解码后的文本（可能含乱码，由 parseWslDistroList 判定）
  */
 function decodeWslListOutput(buf) {
   if (!buf || buf.length === 0) return '';
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
-  return buf.toString('utf8');
+  const utf8 = buf.toString('utf8');
+  if (utf8.includes('\x00')) {
+    const utf16 = buf.toString('utf16le');
+    if (!utf16.includes('\x00')) return utf16;
+    return utf8.replace(/\x00/g, '');
+  }
+  return utf8;
 }
 
 // 帮助/错误文本特征：无发行版时 `wsl -l -q` 输出用法提示（中/英），不是清单。
@@ -142,14 +152,18 @@ const WSL_USAGE_TEXT_RE = /(^|\n)\s*(Usage:|用法:|Copyright|版权所有)/i;
  * 把 `wsl.exe -l -q` 解码文本解析为发行版名列表：
  *   · 含用法/版权特征行（未安装任何发行版）→ 空列表；
  *   · 空输出/仅空白 → 空列表；
- *   · 其余按行拆分、去首尾空白、去 BOM、过滤空行（发行版名允许含空格）。
+ *   · 其余按行拆分、剥离控制字符与空字节（发行版名合法字符集内不含这些；
+ *     兜底防无 BOM UTF-16LE 漏解码时带空字节的串进入 spawn args 崩溃）、
+ *     去首尾空白、去 BOM、过滤空行（发行版名允许含空格）。
  * @param {string} text decodeWslListOutput 的输出
  * @returns {string[]}
  */
 function parseWslDistroList(text) {
   const raw = String(text || '').replace(/^\uFEFF/, '');
   if (WSL_USAGE_TEXT_RE.test(raw)) return [];
-  return raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  return raw.split(/\r?\n/)
+    .map((s) => s.replace(/[\u0000-\u001F\u007F]/g, '').trim())
+    .filter(Boolean);
 }
 
 /** `wsl.exe -l -q`（异步）：解码 + 解析；wsl.exe 缺失/失败返回空列表。 */

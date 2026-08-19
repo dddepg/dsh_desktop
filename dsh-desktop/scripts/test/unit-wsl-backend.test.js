@@ -42,6 +42,17 @@ test('decodeWslListOutput: BOM UTF-16LE 与无 BOM UTF-8 两种形态', () => {
   assert.equal(wsl.decodeWslListOutput(null), '');
 });
 
+test('decodeWslListOutput: 无 BOM UTF-16LE（个别 wsl.exe 管道输出省略 BOM）', () => {
+  const noBom = Buffer.from('Ubuntu\r\nDocker Desktop\r\n', 'utf16le');
+  assert.equal(wsl.decodeWslListOutput(noBom), 'Ubuntu\r\nDocker Desktop\r\n');
+});
+
+test('parseWslDistroList: 剥离空字节等残留控制字符（防 spawn args 崩溃）', () => {
+  // 无 BOM UTF-16LE 漏解码时的真实形态："Ubuntu\r" 的 UTF-16LE 按 utf8 读出
+  assert.deepEqual(wsl.parseWslDistroList('U\x00b\x00u\x00n\x00t\x00u\x00\r\x00\n\x00'), ['Ubuntu']);
+  assert.deepEqual(wsl.parseWslDistroList('Ubuntu\nDocker\u0000Desktop'), ['Ubuntu', 'DockerDesktop']);
+});
+
 test('parseWslDistroList: 正常清单/帮助文本/空输出', () => {
   assert.deepEqual(wsl.parseWslDistroList('Ubuntu\r\nDocker Desktop\r\n'), ['Ubuntu', 'Docker Desktop']);
   assert.deepEqual(wsl.parseWslDistroList('\uFEFFUbuntu\n'), ['Ubuntu']);

@@ -18,6 +18,7 @@
 |---|---|---|---|
 | 选择工作区 / 添加文件夹弹「无法打开文件夹 directory picker failed: ... worker exited...」 | `win32 folder dialog worker exited` | koffi 3.1.3/3.1.4 坏二进制 | 锁定 koffi@3.1.5；启动前 FFI 预检，失败自动切浏览器内目录选择器 |
 | 启动弹「dsh web 启动失败（退出码 1）」 | `plugin tree failed to load` / `failed to apply loader entry` | profile patch 层插件不兼容 | 自动禁用问题插件（safe-boot.overlay.yml）并重试，弹窗显示日志 |
+| 页面启动横幅「Failed to load plugins」+ `failed to import loader entry … (dsh-session-manager): client-modules: require("@deepseek-ai/dsh-client-web-react") missed the module table` | `missed the module table — not a platform seed word` | dsh 0.1.0-rc.8 起 `@deepseek-ai/dsh-client-web-react` 退出平台种子表（宿主 externals drift，且该包无 client bundle 可动态抵达），内置插件 client 同步 require 该包即整树导入失败 | 内置插件 client 改为「宿主 bindSnapshotSelector 优先，缺失时 react.useSyncExternalStore 本地兜底」（v0.4.2 起）；旧客户端执行 `node scripts/sync-companion-plugins.js --with-patches` 重同步内置插件后重启 dsh web |
 | 启动弹「dsh web 启动失败（退出码 1）」 | `EPERM: operation not permitted, symlink ... profiles\node_modules` | 目录联接创建被拒/半成品缓存 | 自动改名备份 `profiles\node_modules`、重建联接并重试 |
 | 设置页看不到识图/自定义提示词/思考强度/插件市场 | 无明显报错 | apiproxy 白名单未覆盖更新后的 agent overlay | 启动时同时补内置 app、profile fallback、agent overlay 三处副本 |
 | 客户端更新点了「立即重启」仍提示有待安装 | `apply-update.log`、`desktop.log` 中 `clientUpdateAttempt` | 更新脚本未完成（安装器被取消/拦截、文件占用） | 识别为「客户端更新未完成」，可重试安装 / 打开日志 / 24h 稍后；安装器失败自动拉起旧版 |

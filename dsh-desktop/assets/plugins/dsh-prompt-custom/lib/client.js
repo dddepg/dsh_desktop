@@ -13,7 +13,31 @@ window.__ModuleLoader__.load({
 
 		const react = require("react");
 		const { jsx, jsxs } = require("react/jsx-runtime");
-		const { bindSnapshotSelector } = require("@deepseek-ai/dsh-client-web-react");
+		// dsh 0.1.0-rc.8 起 @deepseek-ai/dsh-client-web-react 退出平台种子表（宿主
+		// externals drift）：同步 require 会以「missed the module table」拖垮整个
+		// 插件。优先用宿主的 bindSnapshotSelector（≤rc.7 种子表仍提供），缺失时
+		// 用 react.useSyncExternalStore 就地实现同一 hook 语义：订阅 store，渲染期
+		// 从原始快照做选择，结果按 [快照, selector] 记忆化保持引用稳定。
+		const bindSnapshotSelector = (() => {
+			try {
+				const mod = require("@deepseek-ai/dsh-client-web-react");
+				if (typeof mod.bindSnapshotSelector === "function") return mod.bindSnapshotSelector;
+			} catch { /* rc.8+：web-react 不在模块表 */ }
+			return (store) => {
+				const subscribe = (fn) => store.subscribe(fn);
+				const getSnapshot = () => store.getSnapshot();
+				return (selector, isEqual) => {
+					const snap = react.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+					const last = react.useRef(null);
+					if (last.current === null || last.current.snap !== snap || last.current.selector !== selector) {
+						const value = selector(snap);
+						const keep = last.current !== null && last.current.snap === snap && isEqual !== undefined && isEqual(last.current.value, value);
+						last.current = keep ? { selector, snap, value: last.current.value } : { selector, snap, value };
+					}
+					return last.current.value;
+				};
+			};
+		})();
 		const { Button } = require("@deepseek-ai/dsh-client-ui-primitives");
 
 		const NS = "dsh-prompt";

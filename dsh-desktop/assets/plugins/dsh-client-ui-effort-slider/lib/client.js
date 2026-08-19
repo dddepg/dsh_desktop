@@ -765,26 +765,18 @@ class DsEffortSlider extends HTMLElement {
 
         :host(:focus-within) .thumb {
           box-shadow:
-            inset 0 1px 0 rgba(255, 255, 255, 0.95),
-            inset 0 -1px 1px rgba(76, 70, 65, 0.05),
             0 0 0 3px color-mix(in srgb, var(--ds-effort-accent) 30%, transparent),
-            0 1px 2px rgba(62, 56, 50, 0.1),
-            0 4px 10px rgba(62, 56, 50, 0.06);
+            0 1px 2px rgba(62, 56, 50, 0.1);
         }
 
+        /* Personal build: the thumb is the chibi sprite. Glow only adds a soft
+           level-tinted aura — it must NEVER declare "background" here (the
+           shorthand resets background-image and the sprite would vanish at
+           High and above, replaced by an opaque box). */
         :host([data-glow]) .thumb {
-          border-color: color-mix(in srgb, var(--ds-effort-level-color) 50%, transparent);
-          background: linear-gradient(
-            180deg,
-            #ffffff,
-            color-mix(in srgb, var(--ds-effort-level-soft) 34%, #ffffff) 55%,
-            color-mix(in srgb, var(--ds-effort-level-soft) 58%, #f0eeec)
-          );
           box-shadow:
-            inset 0 1px 0 rgba(255, 255, 255, 0.95),
-            inset 0 -1px 1px color-mix(in srgb, var(--ds-effort-level-deep) 10%, transparent),
-            0 1px 2px rgba(62, 56, 50, 0.1),
-            0 4px 10px rgba(62, 56, 50, 0.06);
+            0 0 10px color-mix(in srgb, var(--ds-effort-level-color) 45%, transparent),
+            0 1px 2px rgba(62, 56, 50, 0.1);
         }
 
         :host([disabled]) {
@@ -1020,7 +1012,6 @@ class DsEffortSlider extends HTMLElement {
           background-size: 800% 100%;
           background-repeat: no-repeat;
           background-position: 0% 0;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
           animation: ds-effort-chibi-run 720ms steps(1, end) infinite;
         }
 

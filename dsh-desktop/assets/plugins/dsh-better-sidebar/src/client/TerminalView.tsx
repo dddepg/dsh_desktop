@@ -73,8 +73,22 @@ function xtermTheme(): ITheme {
   }
 }
 
-export function TerminalView(props: { scope: SessionScope; tabId: string; store: SidebarStore }) {
-  const { scope, tabId, store } = props
+/**
+ * Acrylic (glass) terminals sit on a dark translucent card (see
+ * dsh-terminal-tab): force a dark palette regardless of the app scheme so
+ * text never turns dark-on-dark in light mode.
+ */
+function acrylicTheme(t: ITheme): ITheme {
+  t.background = 'rgba(0,0,0,0)'
+  t.foreground = '#d4d4d4'
+  t.cursor = '#d4d4d4'
+  t.cursorAccent = '#16161a'
+  t.selectionBackground = 'rgba(255,255,255,0.22)'
+  return Object.assign(t, ANSI_DARK)
+}
+
+export function TerminalView(props: { scope: SessionScope; tabId: string; store: SidebarStore; acrylic?: boolean }) {
+  const { scope, tabId, store, acrylic } = props
   const hostRef = useRef<HTMLDivElement>(null)
   const [connected, setConnected] = useState(false)
   const [fatal, setFatal] = useState<string | null>(null)
@@ -94,13 +108,13 @@ export function TerminalView(props: { scope: SessionScope; tabId: string; store:
       allowTransparency: true,
       convertEol: false,
       scrollback: 4000,
-      theme: xtermTheme(),
+      theme: acrylic ? acrylicTheme(xtermTheme()) : xtermTheme(),
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
     // Re-theme in place when the app's scheme flips (tokens + palette).
     const applyTheme = (): void => {
-      term.options.theme = xtermTheme()
+      term.options.theme = acrylic ? acrylicTheme(xtermTheme()) : xtermTheme()
       term.refresh(0, term.rows - 1)
     }
     const schemeSub = subscribeColorScheme(applyTheme)

@@ -7988,6 +7988,17 @@ globalThis.__dshChunks__["terminal"] = (require) => {
 			...dark ? ANSI_DARK : ANSI_LIGHT
 		};
 	}
+	/** Acrylic (glass) terminals sit on a dark translucent card: force a dark
+	    palette regardless of the app scheme so text never turns dark-on-dark. */
+	function acrylicTheme(t) {
+		t.background = "rgba(0,0,0,0)";
+		t.foreground = "#d4d4d4";
+		t.cursor = "#d4d4d4";
+		t.cursorAccent = "#16161a";
+		t.selectionBackground = "rgba(255,255,255,0.22)";
+		Object.assign(t, ANSI_DARK);
+		return t;
+	}
 	function TerminalView(props) {
 		const { scope, tabId, store, acrylic } = props;
 		const hostRef = (0, react.useRef)(null);
@@ -8000,7 +8011,7 @@ globalThis.__dshChunks__["terminal"] = (require) => {
 			if (host === null) return;
 			const font = resolveTerminalFont(store.getPrefs(), tokenValue("--ds-font-family-code"));
 			const terminalTheme = xtermTheme();
-			if (acrylic) terminalTheme.background = "rgba(0,0,0,0)";
+			if (acrylic) acrylicTheme(terminalTheme);
 			const term = new import_xterm.Terminal({
 				cursorBlink: true,
 				fontSize: font.fontSize,
@@ -8014,7 +8025,7 @@ globalThis.__dshChunks__["terminal"] = (require) => {
 			term.loadAddon(fit);
 			const applyTheme = () => {
 				const nextTheme = xtermTheme();
-				if (acrylic) nextTheme.background = "rgba(0,0,0,0)";
+				if (acrylic) acrylicTheme(nextTheme);
 				term.options.theme = nextTheme;
 				term.refresh(0, term.rows - 1);
 			};

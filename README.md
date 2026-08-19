@@ -33,7 +33,7 @@
 - **会话导航滑轨** — 对话右侧虚化滑轨随会话长度变化，每条用户输入以圆点标出，悬停预览、点击跳转
 - **文件更改追踪 + 一键还原** — 详情面板「文件」标签页查看本会话全部文件改动（行级 diff）并逐文件/全部还原
 - **隐藏对话输出** — 设置 → 通用设置 →「隐藏对话输出」，隐藏大量工具调用、工具结果与思考过程，每一轮的最终总结输出仍然显示
-- **内置 Agent 预设** — `anchored-standard`（显示名「官pro」）、`router-jspace`、`router-standard`、`v4-flash-godmode-opencode-go`（显示名「goflash」）
+- **内置 Agent 预设** — `anchored-standard`（显示名「官pro」）、`router-standard`、`v4-flash-godmode-opencode-go`（显示名「goflash」）
 
 ### 工程韧性
 

@@ -6,11 +6,14 @@ DeepSeek Harness（dsh）的 Windows 桌面客户端：内置独立 Node 运行�
 ## [0.4.1] — 2026-08-19
 
 ### 新增
-- **内置 Router J-Space (experimental) agent 预设（DreamRift/dsh-router-jspace，MIT + 上游 Apache-2.0/MIT/BSD-3-Clause）**：路由套件外部路由（spec/react/weak）+ J-Space fast/full/loop 认知协议 + oh-we-need V4 思考风格，自带 `j-space` / `oh-we-need` 两个 skill。预设安装脚本升级为**整树递归复制**（`skills/`、`scripts/` 等子目录随预设进 dsh 包），并新增**随装 skills**：预设自带 `skills/<name>` 自动装入 `$DSH_HOME/skills/`（已存在不覆盖，与上游 install.ps1 语义一致；`dsh-skill-filesystem` 热发现，无需重启）。`main.js` 与 `sync-companion-plugins.js` 同步传入 DSH_HOME 落 skills；cli 直接运行也支持 `node scripts/install-minimal-win-preset.js [DSH_HOME]`
+- **预设安装脚本升级**：预设目录改为**整树递归复制**（`skills/`、`scripts/` 等子目录随预设进 dsh 包），并新增**随装 skills** 机制：预设自带 `skills/<name>` 自动装入 `$DSH_HOME/skills/`（已存在不覆盖，与上游 install.ps1 语义一致；`dsh-skill-filesystem` 热发现，无需重启）。`main.js` 与 `sync-companion-plugins.js` 同步传入 DSH_HOME 落 skills；cli 直接运行也支持 `node scripts/install-minimal-win-preset.js [DSH_HOME]`
 
 > 热修复版：插件市场装插件后「服务意外退出」崩溃事故根治（三层防线）+ 空 tool-call 存量会话打不开修复。
 
 ### 修复
+- **移除 Router J-Space 实验预设**：`router-jspace` 预设目录删除，并加入 `RETIRED_BUILTIN_PRESET_DIRS`（更新/重装时自动清理老包里已装的该预设）；README / CHANGELOG / 第三方声明 / 预设清单文档同步收敛为当前 3 个内置预设
+- **会话详情「终端」黑底黑字修复**：终端复用 dsh-better-sidebar 的 xterm 组件（`acrylic` 深色玻璃模式）时，现强制深色调色板（前景 `#d4d4d4`、ANSI dark 16 色、光标与选择色配套），浅色主题下不再出现黑字贴黑底
+- **推理强度滑块 chibi 图框修复**：`data-glow`（High 及以上档）不再用不透明渐变背景盖住动画——原实现渐变随强度加深直至完全遮住精灵图（"方形图框"），改为透明背景透出 chibi 跑步动画 + 等级色柔光；同时去掉常驻的方形投影与聚焦时的 inset 高光线
 - **推理强度控件改回「滑杆优先」弹层（dsh-client-ui-effort-slider）**：此前弹层打开是「模型 / 推理等级」两行下拉菜单，滑杆藏在第二层——已按 HanaAyane/dsh-reasoning-effort 的 Codex 风格形象重构：弹层**顶部直接呈现推理强度滑块**（六档 `Off/Low/Medium/High/Extra/Max`、chibi runner 拇指、光场/紫色像素场/流动渐变文字等 Claude 风格动效全部保留），下方为分隔线与当前模型行（模型名 · 等级 ›），点击进入模型列表（顶部新增「‹ 选择模型」返回按钮）。弹层宽度同步加宽至 312px
 - **推理滑块 chibi 形象许可文件随包同步**：`dsh-client-ui-effort-slider` 合并 HanaAyane chibi runner 形象后，`LICENSE.chibi-runner` 不在 `main.js` / `sync-companion-plugins.js` 的插件文件复制清单里，profile 副本缺该许可文件。已补入两份清单，重新同步后 profile 副本与仓库逐字节一致
 - **空 tool-call 持久化导致存量会话打不开（SessionPersistenceCorruptionError）根治**：session writer 曾把 id/name 为空的 tool-call 写入持久化（assistant message 的 tool-call block、tool/call 事件的 callId/name 均为空串），随后生成 callId/toolCallId 为空的 tool/result；export 能导出该 JSONL，但 dsh-session restore 的 `assertMessageEventShape` 严格校验要求 tool/result 必须有非空 tool source，整个会话「历史加载失败」打不开（事故会话 seq 连续 0..515255、帧可解，仅此一条空链击穿）。双端修复（新增 `scripts/lib/tool-source-patch.js`，幂等、锚点失配自动跳过，接入 main.js 启动 / patch-deps / after-pack / sync-companion-plugins 四条布线，覆盖内置副本 / profile fallback / agent overlay / WSL）：

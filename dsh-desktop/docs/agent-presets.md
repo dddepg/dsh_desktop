@@ -15,7 +15,6 @@ dsh 同步这批预设（自动探测 `DSH_HOME/agent` 与 PATH 上的 dsh 命�
 | `anchored-standard` | 官pro | [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) | MIT | 官方 API pro 方案：两阶段锚定 |
 | `v4-flash-godmode-opencode-go` | goflash | [SheberDavid/v4-flash-godmode-opencode-go](https://github.com/SheberDavid/v4-flash-godmode-opencode-go) | ⚠️ 仓库无 LICENSE 文件（见下方注意） | opencode-go flash：build/fix 内路由 |
 | `router-standard` | router-standard | [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)（preset 子模块 [yjh051108/dsh-router-standard](https://github.com/yjh051108/dsh-router-standard)） | MIT | 官方 API flash 方案：任务感知路由 |
-| `router-jspace` | Router J-Space (experimental) | [DreamRift/dsh-router-jspace](https://github.com/DreamRift/dsh-router-jspace) | MIT（上游组件 Apache-2.0 / MIT / BSD-3-Clause，见目录内 NOTICE.md） | 路由套件外部路由 + J-Space fast/full/loop 认知协议 + oh-we-need V4 思考风格；自带 `j-space` / `oh-we-need` 两个 skill |
 
 ## 同步与更新
 

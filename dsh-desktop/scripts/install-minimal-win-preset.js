@@ -13,9 +13,8 @@
 //   anchored-standard              -> 官pro
 //   v4-flash-godmode-opencode-go   -> goflash
 //   router-standard                -> router-standard
-//   router-jspace                  -> Router J-Space (experimental)
 //
-// 预设目录整树复制（可带子目录，如 router-jspace 的 skills/ 与 scripts/）；
+// 预设目录整树复制（可带子目录，如 skills/ 与 scripts/）；
 // 若预设自带 skills/<name> 子目录，还会随装到 <dshHome>/skills/<name>
 // （与上游 install.ps1 一致：已存在的同名 skill 不覆盖）。
 
@@ -79,6 +78,7 @@ const SHARED_PRESET_DIR = '_preset';
 /** Presets shipped by older DSH Desktop builds but removed from this branch. */
 const RETIRED_BUILTIN_PRESET_DIRS = [
   'minimal-win',
+  'router-jspace',
   'zero-anchored-standard',
   'whoami-standard',
   'warmupbetter',
@@ -151,7 +151,7 @@ function installBuiltinPresets(dshPackageDir, dshHome) {
     syncTree(sharedSrc, sharedDest);
   }
 
-  // 随预设分发的 skills（router-jspace 的 j-space / oh-we-need）。
+  // 随预设分发的 skills（当前预设均无 skills/，机制保留以支持未来带 skills 的预设）。
   const skills = installBuiltinPresetSkills(dshPackageDir, dshHome || resolveDshHomeFromPackage(dshPackageDir));
   if (skills > 0) {
     console.log(`builtin preset skills installed (${skills}) → ${path.join(dshHome || resolveDshHomeFromPackage(dshPackageDir), 'skills')}`);

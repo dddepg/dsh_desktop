@@ -25,12 +25,17 @@ files:
   - updater.js
   - client-updater.js
   - balance.js
+  - balance-scheduler.js
   - session-watcher.js
   - preload.js
   - renderer-recovery.js
   - profile-manifest.js
   - profile-patch-heal.js
+  - profile-bundle-heal.js
+  - profile-module-heal.js
+  - patch-row-heal.js
   - wsl-backend.js
+  - plugin-guard.js
   - watchdog.js
   - assets/**/*
   # 运行时依赖：koffi 预检、依赖自愈补丁等脚本必须在成品里存在。
@@ -48,6 +53,9 @@ extraResources:
     to: node/node.exe
   - from: vendor/npm
     to: npm
+  # Custom uninstaller: installer.nsh copies this to $INSTDIR during install.
+  - from: build/Uninstall_DSH_Desktop.exe
+    to: Uninstall_DSH_Desktop.exe
 
 win:
   icon: build/icon.png
@@ -60,6 +68,8 @@ win:
         - x64
 
 portable:
+  # 命名规则：v0.3.9 式（无 win- 中缀），Release 页面一眼区分形态与芯片。
+  # 注意保持「-portable-<arch>.exe」后缀，兼容已发布版本的客户端更新正则。
   artifactName: DSH-Desktop-${version}-portable-${arch}.${ext}
   # 稳定缓存目录名：配合 scripts/patch-portable-template.js 复用已解压目录，
   # 避免每次启动都解压 app-64.7z（Defender 扫描 2.4 万文件导致分钟级冷启动）。
@@ -75,5 +85,7 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: DSH Desktop
   uninstallDisplayName: DSH Desktop
+  # Replace the default NSIS uninstaller with our custom Uninstall_DSH_Desktop.exe.
+  include: uninstaller/installer.nsh
 
 publish: null

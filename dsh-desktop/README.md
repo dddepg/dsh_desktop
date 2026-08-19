@@ -26,13 +26,17 @@
 ## 快速开始（成品用户）
 
 1. 打开 `dist` 目录，选其一：
-   - `DSH-Desktop-<版本>-portable-x64.exe` —— 免安装便携版，双击运行
-   - `DSH-Desktop-Setup-<版本>-x64.exe` —— 安装版，创建桌面/开始菜单快捷方式
+   - `DSH-Desktop-<版本>-win-portable-x64.exe` —— 免安装便携版，双击运行
+   - `DSH-Desktop-<版本>-win-setup-x64.exe` —— 安装版，创建桌面/开始菜单快捷方式
 2. 首次运行会显示启动动画，随后进入 DeepSeek Harness Web UI。
 3. 如尚未配置 API Key，在界面内完成配置即可开始使用（与命令行 dsh 完全一致）。
 
 > 便携版的数据目录是 exe 旁的 `data\`；安装版在 `%APPDATA%\DSH Desktop\`。
 > 若想强制指定 DSH 配置目录，启动前设置环境变量 `DSH_HOME` 即可（与 dsh CLI 行为一致）。
+
+> **macOS 用户**：当前构建未做 Apple 公证，首次打开若提示“已损坏，无法打开”，
+> 执行 `sudo xattr -cr "/Applications/DSH Desktop.app"` 即可；
+> 详见 [docs/troubleshooting.md](docs/troubleshooting.md) 的 macOS 专章。
 
 ## 跟随官方更新（用户同意后自动更新）
 
@@ -46,7 +50,7 @@
 ## 客户端自更新（封装层）
 
 - 启动 60 秒后及此后每 12 小时，自动查询上游仓库的最新 release（**GitHub Releases → Gitee Releases 双源回退**；可用环境变量 `DSH_DESKTOP_RELEASE_API` 指向自定义镜像 API），比较当前版本。
-- 发现新版本时弹窗询问：**立即更新 / 跳过此版本 / 稍后**；同意后带进度条下载安装包（便携版选 `*-portable-x64.exe`，安装版选 `Setup-*-x64.exe`；Gitee 因单文件 100MB 限制拆分的 `.part1/.part2` 分片会自动按序下载并合并），下载到 `<数据目录>\updates\`。
+- 发现新版本时弹窗询问：**立即更新 / 跳过此版本 / 稍后**；同意后带进度条下载安装包（便携版选 `*-win-portable-x64.exe`，安装版选 `*-win-setup-x64.exe`；Gitee 因单文件 100MB 限制拆分的 `.part1/.part2` 分片会自动按序下载并合并），下载到 `<数据目录>\updates\`。
 - 确认重启后：**便携版**用 detached 脚本等待旧 exe 解锁 → 备份 → 原地替换 → 自动启动新版本（只读目录自动退化为直接启动新 exe）；**安装版**等待进程退出后以向导方式启动新安装包，安装完成后如果新版没有自动运行，脚本会从卸载注册表定位并显式启动新版本。启动更新脚本时会清除待安装标记，更新失败不会在下次启动反复弹同一个更新框。
 - 菜单入口：chrome 栏 ⋯ 菜单 →「检查客户端更新…」；托盘菜单同样可用。跳过版本记录在 `settings.json`（`skipClientVersion`）。
 - **更新源可见可复制**：⋯ 菜单内「更新源」区块与「关于 DSH Desktop」对话框展示两个项目仓库地址（GitHub / Gitee），一键复制到剪贴板。
@@ -54,12 +58,13 @@
 
 ## DeepSeek 余额小部件
 
-- 桌面端读取 `~/.dsh/.credentials.yaml` 的 `DEEPSEEK_API_KEY`（或环境变量），调用 `https://api.deepseek.com/user/balance`，每 15 分钟刷新，通过 preload 推送到 Web UI。
-- 配套 dsh 客户端插件（`assets/plugins/dsh-balance`）在每次启动时自动同步进 web profile 并注册到 `conversation.composer.dock`，在对话底部统计栏内联显示：**本轮 ¥X.XX · 余额 ¥Y.YY**（本轮费用按 token 用量 × 价格档估算，缓存命中/未命中/输出分别计价）。
+- 桌面端读取 `~/.dsh/.credentials.yaml` 的 `DEEPSEEK_API_KEY`（或环境变量），调用 `https://api.deepseek.com/user/balance`，每 3 分钟轮询，并在「启动 / 窗口显示 / 会话回合完成 / 页面加载 / 菜单开关」时触发刷新（30 秒节流；失败按 30s→1m→2m→5m 指数退避自动重试，成功即恢复），通过 preload 推送到 Web UI。
+- 配套 dsh 客户端插件（`assets/plugins/dsh-balance`）在每次启动时自动同步进 web profile 并注册到 `conversation.composer.dock`，在对话底部统计栏内联显示：**本轮 ¥X.XX · 余额 ¥Y.YY**（本轮费用按 token 用量 × 价格档估算，缓存命中/未命中/输出分别计价；会话投影携带真实模型时按真实模型计价，否则明确标注「按默认模型估算」）。
 - **OpenCode Go 订阅额度**：同一小部件内追加显示 `Go 5h x% 周 x% 月 x%`——调用 `https://opencode.ai/zen/go/v1/usage` 读取 **5 小时滚动 / 每周 / 每月** 三个窗口的已用百分比与重置时间；密钥取自 `OPENCODE_GO_API_KEY`（环境变量或 `~/.dsh/.credentials.yaml`，回退 OpenCode CLI 的 `auth.json`），未配置时自动省略该段。
-- 价格档默认：deepseek-chat 2/0.5/8、deepseek-reasoner 与 deepseek-v4-pro 4/1/16（¥/百万 token）；可在 `<数据目录>\settings.json` 的 `balancePrices.<model>` 覆盖。代理/镜像可用 `DEEPSEEK_API_BASE` 或 `DEEPSEEK_BALANCE_URL` 环境变量。
+- 价格档默认（2026-08-17 起峰谷定价，¥/百万 token）：deepseek-v4-flash 高峰 3/0.1/9、空闲 1.5/0.05/4.5；deepseek-v4-pro 高峰 9/0.3/27、空闲 4.5/0.15/13.5；deepseek-chat / deepseek-reasoner 为旧模型名别名。可在 `<数据目录>\settings.json` 的 `balancePrices.<model>` 覆盖。
+- 代理/镜像环境变量：`DEEPSEEK_BALANCE_URL`（余额端点完整 URL）或 `DEEPSEEK_API_BASE`（自动拼接 `/user/balance`）；`OPENCODE_USAGE_URL`（OpenCode Go 端点完整 URL）。使用 `http://` 端点时 API Key 明文传输，桌面端会记录告警，仅建议用于本地代理。
 - 不需要余额提示时：chrome 栏 ⋯ 菜单 →「显示余额/本轮费用」取消勾选，整个 dock 会隐藏（第三方中转/非官方直连用户推荐关闭）。
-- 纯浏览器打开 Web UI 时无桌面壳推送，小部件只显示「本轮」费用。
+- 纯浏览器打开 Web UI 时无桌面壳推送，小部件只显示「本轮」费用（内置默认价格档）。
 
 ## 自定义注入提示词
 
@@ -71,6 +76,14 @@
   - **替换整体（replace）**：用自定义文本整体替换默认人设。
 - **生效范围**：应用到 standard 完整 Agent 基准预设；设置保存后新创建会话即刻生效，运行中会话沿用注入时的提示词。
 - 自定义文本按原样注入，可用 `{{model}}` 等占位符；未启用或内容为空时回落为官方默认。
+
+## 工作区锚点（workspace-anchor）
+
+- 新增配套插件 `@deepseek-ai/dsh-workspace-anchor`：在每个 agent 的**稳定 system prompt** 中注入一段约 70 token 的工作区偏好，以 `{{cwd}}` 渲染真实工作区路径，每次请求重复、不被会话滚动或压缩吞掉。
+- 锚点规则：默认在 cwd 内编辑/构建/交付；优先使用相对路径（工具会按 cwd 解析）；允许读取或搜索任何位置，但搜索命中的外部目录只是参考材料，不是新项目根；仅当用户显式指定路径或确有必要时才离开 cwd，随后返回。
+- 纯提示词偏好，**不修改任何权限/沙箱行为**。
+- `minimal-win`、`anchored-standard`、`zero-anchored-standard`、`whoami-standard`、`warmupbetter`、`warmupbetter-replay` 六个 complete-persona 预设会丢弃插件注入节，因此同一锚点已直接写入它们各自的 `agent.cordis.yml` persona 文本；`standard`、`code`、`router-standard`、`v4-flash-godmode-opencode-go` 等非 complete 预设由插件节覆盖。
+
 
 ## 识图插件（dsh-vision）
 
@@ -256,7 +269,7 @@ npm run dist                   # 构建 portable + NSIS 安装包，输出到 di
 
 ### 把配套插件装进你自己 WSL 里的 dsh（可选，与后端模式无关）
 
-如果你在 WSL 里另有自己装的 dsh（checkout 开发版或 npm 版）——壳自带的配套插件（余额、文件视图、终端、浮窗、插件市场、自定义提示词、第三方思考、识图等）是壳私有打包的（不进 npm），想让它也用上，在 WSL 里执行：
+如果你在 WSL 里另有自己装的 dsh（checkout 开发版或 npm 版）——壳自带的配套插件（余额、文件视图、终端、浮窗、插件市场、自定义提示词、工作区锚点、第三方思考、识图等）是壳私有打包的（不进 npm），想让它也用上，在 WSL 里执行：
 
 ```bash
 node dsh-desktop/scripts/sync-companion-plugins.js ~/.dsh --with-patches

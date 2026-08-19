@@ -4,6 +4,27 @@
  * endpoint and returns the answer as text. Backend is fully configurable —
  * Zhipu's free glm-4.6v-flash (default), DashScope, Ark, a local Ollama, or
  * DeepSeek's own vision API the day it ships (users' existing key then just works).
+ *
+ * Multimodal-feel layer: images the user attaches directly to a message
+ * (composer attach button / paste / drop) are intercepted at the `llm/stream`
+ * waterfall — the LLM service's per-call boundary — and replaced with their
+ * VLM recognition text BEFORE the (text-only) LLM adapter sees them. The
+ * interception rewrites only the request copy that goes to the model; the
+ * session log keeps the original message with its image attachment, so the
+ * user interface always shows the picture cards and the recognition text
+ * never leaks back into the conversation. Recognition failures degrade to an
+ * explanatory text block and never block the conversation.
+ *
+ * Prompt-gate cooperation: the host apiproxy rejects image content at
+ * prompt time when the selected model's inputModalities exclude "image"
+ * (MODEL_DOES_NOT_SUPPORT_IMAGES), which fires BEFORE this plugin's
+ * llm/stream interception ever runs. This plugin therefore wraps every LLM
+ * adapter's resolveModel/listModels to declare image input for models that
+ * claim text-only — the image is admitted, then converted to text here, so
+ * the text-only model never actually sees it. The wrap records each model's
+ * ORIGINAL capability in a native-support cache; the llm/stream interception
+ * consults that cache and passes images through untouched for models that
+ * are natively multimodal (e.g. pi-ai).
  * @module dsh-vision
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -11,7 +32,7 @@ import z from '@deepseek-ai/schemastery';
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 import { visionChat } from './vlm.js';
 export const name = 'dsh-vision';
-export const inject = ['tools', 'systemPrompt', 'settings'];
+export const inject = ['tools', 'systemPrompt', 'settings', 'llm', 'attachments'];
 const DEFAULT_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
 /** Zhipu's free tier gets congested (HTTP 429 code 1305); older free models still answer. */
 const DEFAULT_FREE_FALLBACKS = ['glm-4.1v-thinking-flash', 'glm-4v-flash'];
@@ -51,11 +72,283 @@ const NS = settingsNamespace('dsh-vision');
 let liveConfig = () => ({});
 
 const PROMPT_TEXT = `## Vision (view_image)
-The chat model itself cannot see images, but the view_image tool can. Whenever an image matters — a screenshot path the user mentions, an image URL, a chart, a UI mockup — call view_image instead of guessing or refusing. Ask it a specific question (extract text, count objects, read a chart, describe the layout); it answers arbitrary questions, not just captions. Prefer one focused call per thing you need to know; ask a follow-up call rather than one vague question.`;
+The chat model itself cannot see images, but the view_image tool can. Whenever an image matters — a screenshot path the user mentions, an image URL, a chart, a UI mockup — call view_image instead of guessing or refusing. Ask it a specific question (extract text, count objects, read a chart, describe the layout); it answers arbitrary questions, not just captions. Prefer one focused call per thing you need to know; ask a follow-up call rather than one vague question.
+Images the user attaches to a message are recognized automatically in the background and arrive as "[图片] 识别结果" text blocks — treat them as ordinary text context (the image itself never reaches a text-only model; natively multimodal models receive the original image). The user interface keeps showing the original picture.`;
 const TEXT_OUTPUT = {
     schema: { type: 'string' },
     render: (_args, value) => [{ type: 'text', text: String(value) }],
 };
+
+/**
+ * Cache cap for per-attachment recognition text. A turn re-claims messages on
+ * later steps and the same attachment can legitimately recur across a long
+ * session; caching the text avoids re-calling the VLM for the same bytes,
+ * while the cap keeps memory bounded.
+ */
+const IMAGE_TEXT_CACHE_LIMIT = 64;
+
+/**
+ * Ask the configured VLM chain one question about one image (primary model,
+ * then fallbacks on 429/404/5xx, plus the 1024-token downgrade retry for
+ * legacy models). Reused by both the `view_image` tool and the automatic
+ * attach-image recognition.
+ * @param resolved - effective config from {@link current}.
+ * @param apiKey - resolved key ('' for keyless local endpoints).
+ * @param source - image as http(s)/data: URL (auto path already base64s bytes).
+ * @param question - what to find out about the image.
+ * @param signal - turn cancellation.
+ * @returns the recognition text.
+ * @throws the last error when every model failed.
+ */
+export async function recognizeWithFallbacks(resolved, apiKey, source, question, signal) {
+    let lastError;
+    for (const model of [resolved.model, ...resolved.fallbackModels]) {
+        try {
+            return await visionChat({ ...resolved, model, apiKey, source, question, signal });
+        }
+        catch (error) {
+            lastError = error;
+            if (!(error instanceof Error)) throw error;
+            // 400（可能是 max_tokens 超上限，如智谱 code 1210）：降档到 1024
+            // 重试同一模型一次，而不是直接放弃——fallback 链只对 429/404/5xx 生效。
+            if (MAX_TOKENS_REJECTED.test(error.message) && resolved.maxTokens > 1024) {
+                try {
+                    return await visionChat({ ...resolved, model, apiKey, source, question, maxTokens: 1024, signal });
+                }
+                catch (error2) {
+                    lastError = error2;
+                    if (!(error2 instanceof Error) || !RETRIABLE.test(error2.message)) throw error2;
+                    continue;
+                }
+            }
+            if (!RETRIABLE.test(error.message)) throw error;
+        }
+    }
+    throw lastError;
+}
+
+/**
+ * Recognize one image block into text. NEVER throws: every failure (invalid
+ * ref, oversized image, attachment store outage, VLM error, abort) degrades
+ * to an explanatory text block so the conversation always proceeds.
+ * @param block - the image content block ({type:'image', attachment: ref}).
+ * @param question - user message text ('' when the message is image-only).
+ * @param deps - { readImage, recognize, signal, maxImageBytes, cache }.
+ */
+async function describeImageBlock(block, question, deps) {
+    const ref = block && block.attachment;
+    if (!ref || typeof ref !== 'object' || typeof ref.attachmentId !== 'string' || typeof ref.mediaType !== 'string') {
+        return '[图片未识别] 附件引用无效，该图片被跳过。';
+    }
+    const cache = deps.cache;
+    if (cache) {
+        const cached = cache.get(ref.attachmentId);
+        if (cached !== undefined) return cached;
+    }
+    let text;
+    try {
+        const maxBytes = typeof deps.maxImageBytes === 'number' ? deps.maxImageBytes : 10 * 1024 * 1024;
+        if (typeof ref.bytes === 'number' && ref.bytes > maxBytes) {
+            text = `[图片未识别] 图片 ${ref.bytes} 字节超过 ${maxBytes} 字节上限（可在识图插件设置中调大 maxImageBytes）。`;
+        }
+        else {
+            const { readImage, recognize } = deps;
+            const read = await readImage(ref, deps.signal);
+            const data = read && read.data instanceof Uint8Array ? read.data : read;
+            if (!(data instanceof Uint8Array)) throw new Error('附件读取未返回图像字节');
+            const source = `data:${ref.mediaType};base64,${Buffer.from(data).toString('base64')}`;
+            const questionText = typeof question === 'string' && question.trim() !== ''
+                ? question
+                : '请描述这张图片：包括所有可见文字（逐字）、整体布局与值得注意的细节。';
+            text = await recognize(source, questionText, deps.signal);
+        }
+    }
+    catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        text = `[图片识别失败] ${reason}（已跳过该图片，其余对话不受影响）。`;
+    }
+    if (cache) {
+        if (cache.size >= IMAGE_TEXT_CACHE_LIMIT) cache.clear();
+        cache.set(ref.attachmentId, text);
+    }
+    return text;
+}
+
+/**
+ * Replace every image block in the claimed messages with its recognition
+ * text. Pure over the injected deps, so it is unit-testable without cordis.
+ * Messages without images pass through untouched (changed=false, zero cost).
+ * @param messages - request message array (llm/stream options.messages).
+ * @param deps - { readImage(ref, signal), recognize(source, question, signal),
+ *   signal?, maxImageBytes?, cache? (Map)}.
+ * @returns { messages, changed }.
+ */
+export async function convertMessagesWithImages(messages, deps) {
+    if (!Array.isArray(messages)) return { messages, changed: false };
+    let changed = false;
+    const out = [];
+    for (const message of messages) {
+        if (!message || !Array.isArray(message.content)) {
+            out.push(message);
+            continue;
+        }
+        const imageBlocks = message.content.filter((b) => b && b.type === 'image');
+        if (imageBlocks.length === 0) {
+            out.push(message);
+            continue;
+        }
+        changed = true;
+        // 用户消息里的文本部分就是识别问题（贴合「这张图里写了什么」这类问法）。
+        const question = message.content
+            .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+            .map((b) => b.text)
+            .join('')
+            .trim();
+        const blocks = [];
+        let index = 0;
+        for (const block of message.content) {
+            if (!block || block.type !== 'image') {
+                blocks.push(block);
+                continue;
+            }
+            index += 1;
+            const label = imageBlocks.length > 1 ? `[图片 ${index}/${imageBlocks.length}]` : '[图片]';
+            const description = await describeImageBlock(block, question, deps);
+            blocks.push({ type: 'text', text: `${label} 识别结果：\n${description}` });
+        }
+        out.push({ ...message, content: blocks });
+    }
+    return { messages: out, changed };
+}
+
+/**
+ * Wrap one LLM adapter so text-only models declare image input. The host
+ * apiproxy's prompt-time gate (inputModalities check) would otherwise reject
+ * attached images as MODEL_DOES_NOT_SUPPORT_IMAGES before this plugin's
+ * llm/stream interception can convert them to text. Prototype-inherited
+ * (Object.create) like dsh-third-party-thinking, so wrapper chains from other
+ * plugins compose.
+ *
+ * The ORIGINAL capability of every resolved model is recorded in
+ * nativeImageSupport (provider+"\0"+model -> boolean). The llm/stream
+ * interception reads that cache to pass images through untouched for natively
+ * multimodal models.
+ *
+ * IMPORTANT: resolveModel here only RECORDS capability and returns the info
+ * UNCHANGED. Adding "image" is done exclusively by the llm service instance
+ * wrap (wrapVisionResolveModelInfo below) — if both wraps added "image", each
+ * would pollute the other's native-capability reading. listModels adds "image"
+ * for UI consistency only (model pickers never drive the prompt gate).
+ * @param adapter - the registration's current adapter (possibly already
+ *   wrapped by another plugin).
+ * @param provider - provider id the adapter is registered under.
+ * @param nativeImageSupport - Map<string, boolean> recording native capability.
+ * @returns the wrapped adapter (same reference when already wrapped).
+ */
+export function wrapVisionAdapter(adapter, provider, nativeImageSupport) {
+    if (!adapter || adapter.__dshVisionWrapped) return adapter;
+    const wrapped = Object.create(adapter);
+    wrapped.__dshVisionWrapped = true;
+    wrapped.resolveModel = async (providerId, model, signal) => {
+        const info = await adapter.resolveModel(providerId, model, signal);
+        const modalities = info && Array.isArray(info.inputModalities) ? info.inputModalities : undefined;
+        const nativeSupportsImages = modalities !== undefined && modalities.includes('image');
+        if (typeof providerId === 'string' && typeof model === 'string') {
+            nativeImageSupport.set(providerId + '\0' + model, nativeSupportsImages);
+        }
+        return info;
+    };
+    wrapped.listModels = async (providerId) => {
+        const models = await adapter.listModels(providerId);
+        if (!Array.isArray(models)) return models;
+        return models.map((m) => {
+            const mods = m && Array.isArray(m.inputModalities) ? m.inputModalities : undefined;
+            if (mods !== undefined && mods.includes('image')) return m;
+            return { ...m, inputModalities: [...(mods ?? ['text']), 'image'] };
+        });
+    };
+    return wrapped;
+}
+
+/**
+ * Wrap the llm SERVICE instance method `resolveModelInfo` so the host prompt
+ * gate (dsh-host-apiproxy) sees "image" in inputModalities for every model.
+ * This is the reliable admission path: the host gate always calls
+ * `ctx.llm.resolveModelInfo`, and the llm service instance already exists when
+ * this plugin applies (it is declared in `inject`), so the wrap cannot miss
+ * its window the way the adapter-registry wrap did (adapters may register
+ * after this plugin's apply).
+ *
+ * The ORIGINAL capability is recorded into nativeImageSupport for the
+ * llm/stream handler (asking the wrapped method again would be polluted — it
+ * now always includes "image"). Idempotent per service instance via
+ * `service.__dshVisionResolveWrapped`. Returns a restore function, or
+ * undefined when nothing was wrapped (missing method / already wrapped).
+ * @param service - the llm service object (ctx.llm).
+ * @param nativeImageSupport - Map<string, boolean> recording native capability.
+ * @returns restore function | undefined.
+ */
+export function wrapVisionResolveModelInfo(service, nativeImageSupport) {
+    if (!service || typeof service.resolveModelInfo !== 'function') return undefined;
+    if (service.__dshVisionResolveWrapped) return undefined;
+    const hadOwn = Object.prototype.hasOwnProperty.call(service, 'resolveModelInfo');
+    const original = service.resolveModelInfo;
+    const bound = typeof original.bind === 'function' ? original.bind(service) : original;
+    const wrapped = async (provider, model, signal) => {
+        const info = await bound(provider, model, signal);
+        const modalities = info && Array.isArray(info.inputModalities) ? info.inputModalities : undefined;
+        const nativeSupportsImages = modalities !== undefined && modalities.includes('image');
+        if (typeof provider === 'string' && typeof model === 'string') {
+            nativeImageSupport.set(provider + '\0' + model, nativeSupportsImages);
+        }
+        if (modalities === undefined || nativeSupportsImages) return info;
+        // Text-only model: admit the image at the prompt gate — this plugin
+        // converts it to recognition text in llm/stream before the adapter
+        // ever sees it.
+        return { ...info, inputModalities: [...modalities, 'image'] };
+    };
+    service.__dshVisionResolveWrapped = { hadOwn, bound };
+    service.resolveModelInfo = wrapped;
+    console.log('[dsh-vision] wrapped llm.resolveModelInfo service method for image-input admission');
+    return () => {
+        if (!service.__dshVisionResolveWrapped) return;
+        const entry = service.__dshVisionResolveWrapped;
+        delete service.__dshVisionResolveWrapped;
+        if (entry.hadOwn) service.resolveModelInfo = entry.bound;
+        else delete service.resolveModelInfo; // fall back to the prototype method
+    };
+}
+
+/**
+ * Apply every vision admission wrap: the llm service instance method
+ * (reliable gate admission) plus every registered adapter (listModels UI
+ * consistency + native-capability recording). Re-runs on llm/adapters-updated
+ * so adapters registered after this plugin's apply are covered too. Never
+ * throws (logging only) — a wrap failure must not take the plugin fiber down.
+ */
+function applyVisionWraps(ctx, nativeImageSupport) {
+    try {
+        if (ctx.llm) {
+            wrapVisionResolveModelInfo(ctx.llm, nativeImageSupport);
+            if (ctx.llm.adapters) {
+                let wrappedCount = 0;
+                for (const [provider, registration] of ctx.llm.adapters) {
+                    if (!registration || !registration.adapter) continue;
+                    if (registration.adapter.__dshVisionWrapped) continue;
+                    registration.adapter = wrapVisionAdapter(registration.adapter, provider, nativeImageSupport);
+                    wrappedCount += 1;
+                }
+                if (wrappedCount > 0) {
+                    console.log('[dsh-vision] wrapped ' + wrappedCount + ' LLM adapter(s) for vision admission');
+                }
+            }
+        }
+    }
+    catch (error) {
+        console.warn('[dsh-vision] vision wrap failed: ' + ((error && error.message) || error));
+    }
+}
+
 export function apply(ctx, config) {
     liveConfig = () => config || {};
     // settings 已在本插件 inject 中声明，apply 时服务必在；直接同步注册并
@@ -130,32 +423,7 @@ export function apply(ctx, config) {
             const question = typeof input.question === 'string' && input.question !== ''
                 ? input.question
                 : 'Describe this image thoroughly. Include any visible text verbatim, the overall layout, and notable details.';
-            const resolved = current();
-            const apiKey = resolveApiKey();
-            let lastError;
-            for (const model of [resolved.model, ...resolved.fallbackModels]) {
-                try {
-                    return await visionChat({ ...resolved, model, apiKey, source, question, signal: exec.signal });
-                }
-                catch (error) {
-                    lastError = error;
-                    if (!(error instanceof Error)) throw error;
-                    // 400（可能是 max_tokens 超上限，如智谱 code 1210）：降档到 1024
-                    // 重试同一模型一次，而不是直接放弃——fallback 链只对 429/404/5xx 生效。
-                    if (MAX_TOKENS_REJECTED.test(error.message) && resolved.maxTokens > 1024) {
-                        try {
-                            return await visionChat({ ...resolved, model, apiKey, source, question, maxTokens: 1024, signal: exec.signal });
-                        }
-                        catch (error2) {
-                            lastError = error2;
-                            if (!(error2 instanceof Error) || !RETRIABLE.test(error2.message)) throw error2;
-                            continue;
-                        }
-                    }
-                    if (!RETRIABLE.test(error.message)) throw error;
-                }
-            }
-            throw lastError;
+            return recognizeWithFallbacks(current(), resolveApiKey(), source, question, exec.signal);
         },
     })), 'dsh-vision.tool');
     ctx.effect(() => ctx.systemPrompt.section({
@@ -163,4 +431,140 @@ export function apply(ctx, config) {
         order: 116,
         text: PROMPT_TEXT,
     }), 'dsh-vision.prompt');
+    // —— 多模态体感：用户直接发图 → 后台 VLM 识别后以文本送入纯文本模型 ——
+    // 拦截点选在 llm/stream（LLM 服务的每次流式调用 waterfall，payload 是
+    // request 信封，含 messages）。它比 agent/pre-step 更靠后、更干净：替换
+    // 只作用于「送进模型的消息副本」，session 里 append 的仍是原始消息
+    // （image block 原样）→ 用户界面始终显示图片卡片，识别文本永不回流 UI。
+    // llm/stream 是同步链（listener 必须同步返回流，fallback 是流工厂）；
+    // 识别是异步的，所以返回一个包装 async generator：先 await 识别，再以
+    // 转换后的消息重入 llm.stream()（带防重入标记，完整链含校验重走一遍）。
+    const VISION_CONVERTED = Symbol('dsh-vision.converted');
+    const imageTextCache = new Map();
+    // 原生能力缓存：adapter wrap 时记录「模型本身是否支持 image」（不被本
+    // 插件的 inputModalities 声明污染）。llm/stream 拦截据此决定：原生多模
+    // 态模型（如 pi-ai）原图透传；文本型模型走 VLM 识别替换。
+    const nativeImageSupport = new Map();
+    const visionHandler = createLlmStreamHandler({
+        convert: async (messages, signal) => {
+            // attachments 已在 inject 中声明，cordis 会在装配时校验服务存在
+            // （宿主 prompt 入口的 saveImage 依赖同一服务，必然已装配）；
+            // 此前用 try/catch 可选访问反而把 Proxy 的
+            // "cannot get property "attachments" without inject" 吞成 undefined。
+            const attachments = ctx.attachments;
+            return convertMessagesWithImages(messages, {
+                readImage: async (ref, sig) => {
+                    if (!attachments || typeof attachments.readImage !== 'function') {
+                        throw new Error('附件存储服务不可用（attachments.readImage 缺失）');
+                    }
+                    return attachments.readImage(ref, sig);
+                },
+                recognize: (source, question, sig) =>
+                    recognizeWithFallbacks(current(), resolveApiKey(), source, question, sig),
+                signal,
+                cache: imageTextCache,
+                maxImageBytes: current().maxImageBytes,
+            });
+        },
+        getLlm: () => {
+            try { return ctx.get('llm'); } catch { return undefined; }
+        },
+        markerKey: VISION_CONVERTED,
+        supportsImages: async (options) => {
+            const provider = options && options.provider;
+            const model = options && options.model;
+            if (typeof provider !== 'string' || typeof model !== 'string') return false;
+            // 未命中时保守 false（识别替换）——DeepSeek 等文本型模型最常见；
+            // host 的 prompt 检查会先调 resolveModel（本插件 wrap 版）填好缓存。
+            return nativeImageSupport.get(provider + '\0' + model) === true;
+        },
+    });
+    ctx.effect(() => ctx.on('llm/stream', visionHandler, { global: true, prepend: true }), 'dsh-vision.llm-stream');
+    // 放行 prompt 入口的 inputModalities 检查：文本型模型由本插件声明 image
+    // （图片会在 llm/stream 转成文本）。服务实例方法 wrap 在 apply 时立即生
+    // 效（llm 服务已在 inject 中装配）；adapter 后注册的（热装配）经
+    // llm/adapters-updated 重打——必须 {global:true}：该事件从 llm 服务作用
+    // 域发出，插件作用域不在其祖先链上，非 global 监听永远收不到（上一版
+    // 修复失败的根因）。
+    applyVisionWraps(ctx, nativeImageSupport);
+    ctx.effect(() => ctx.on('llm/adapters-updated', () => applyVisionWraps(ctx, nativeImageSupport), { global: true }), 'dsh-vision.vision-wrap');
+    // 插件 fiber 卸载时恢复服务方法（防热重载叠加/污染）。
+    ctx.effect(() => () => {
+        try {
+            if (ctx.llm && ctx.llm.__dshVisionResolveWrapped) {
+                const entry = ctx.llm.__dshVisionResolveWrapped;
+                delete ctx.llm.__dshVisionResolveWrapped;
+                if (entry.hadOwn) ctx.llm.resolveModelInfo = entry.bound;
+                else delete ctx.llm.resolveModelInfo;
+            }
+        } catch { /* 清理失败不阻断卸载 */ }
+    }, 'dsh-vision.vision-unwrap');
+}
+
+/**
+ * Build the `llm/stream` waterfall listener that rewrites image-bearing
+ * request messages into their recognition text. Pure over the injected deps,
+ * so it is unit-testable without cordis.
+ *
+ * Contract: the listener is synchronous (the waterfall returns its value
+ * verbatim and the consumer `for await`s it as a stream). Image recognition
+ * is async, so for requests that actually contain image blocks the listener
+ * returns a wrapping async generator that (1) awaits the conversion, (2)
+ * re-enters `llm.stream()` with the converted messages plus a re-entry marker
+ * when anything changed, or (3) falls through to the original chain via
+ * `next()` when nothing changed or the LLM service is unavailable. Requests
+ * without images (and already-marked re-entries) pass through untouched.
+ * When `deps.supportsImages` is provided and resolves true for a request
+ * (natively multimodal model, e.g. pi-ai), the request falls through to
+ * `next()` untouched so the model receives the real image.
+ * @param deps - { convert(messages, signal) → Promise<{messages, changed}>,
+ *   getLlm() → {stream(options)}, markerKey (Symbol),
+ *   supportsImages?(options) → Promise<boolean> }.
+ * @returns the (options, next) => stream listener.
+ */
+export function createLlmStreamHandler(deps) {
+    const hasImageBlocks = (messages) => Array.isArray(messages) && messages.some((m) =>
+        m && Array.isArray(m.content) && m.content.some((b) => b && b.type === 'image'));
+    return (options, next) => {
+        if (options === null || typeof options !== 'object') return next();
+        if (deps.markerKey !== undefined && options[deps.markerKey] === true) return next();
+        if (!hasImageBlocks(options.messages)) return next();
+        const signal = options && options.signal !== undefined ? options.signal : undefined;
+        return (async function* () {
+            // 原生多模态模型：原图透传（不做识别替换）；判定失败时保守走识别。
+            if (typeof deps.supportsImages === 'function') {
+                try {
+                    if (await deps.supportsImages(options)) {
+                        yield* next();
+                        return;
+                    }
+                }
+                catch (error) {
+                    console.warn('[dsh-vision] native image support check failed, converting images anyway: ' + ((error instanceof Error ? error.message : String(error)) || error));
+                }
+            }
+            let messages = options.messages;
+            try {
+                const converted = await deps.convert(options.messages, signal);
+                if (converted && converted.changed && Array.isArray(converted.messages)) {
+                    messages = converted.messages;
+                }
+            }
+            catch (error) {
+                console.warn('[dsh-vision] recognition failed, sending original messages: ' + ((error instanceof Error ? error.message : String(error)) || error));
+            }
+            if (messages === options.messages) {
+                yield* next();
+                return;
+            }
+            let llm;
+            try { llm = deps.getLlm(); } catch { llm = undefined; }
+            if (!llm || typeof llm.stream !== 'function') {
+                yield* next();
+                return;
+            }
+            const marked = deps.markerKey === undefined ? options : { ...options, [deps.markerKey]: true };
+            yield* llm.stream({ ...marked, messages });
+        })();
+    };
 }

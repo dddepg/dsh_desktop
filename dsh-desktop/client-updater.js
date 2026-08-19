@@ -7,9 +7,12 @@
 //   1. checkLatest(): 依次查询上游发布源（GitHub Releases → Gitee Releases，
 //      可用环境变量 DSH_DESKTOP_RELEASE_API 指向自定义镜像 API），取 latest
 //      release 的 tag 作为版本号，与当前 APP_VERSION 比较。
-//   2. selectAsset(): 按当前部署形态选择安装包 —— 便携版选
-//      *-portable-x64.exe；安装版选 Setup-*-x64.exe。Gitee 因单文件 100MB
-//      限制把安装包拆成 .part1/.part2 分片，此时自动按序下载并拼接。
+//   2. selectAsset(): 按当前部署形态与 CPU 架构选择安装包 —— 便携版选
+//      *-portable-<arch>.exe（x64/arm64）；安装版选 Setup-*-<arch>.exe。
+// 资产命名（v0.3.9+ 规则，带平台前缀）：DSH-Desktop-<版本>-win-portable-<arch>.exe、
+// DSH-Desktop-<版本>-win-setup-<arch>.exe；macOS 为 ...-macos-<arch>.dmg/.zip。
+//      Gitee 因单文件 100MB 限制把安装包拆成 .part1/.part2 分片，此时自动
+//      按序下载并拼接。
 //   3. downloadRelease(): 流式下载（带进度回调）到 <userData>/updates/。
 //   4. applyUpdate(): 写一个纯 ASCII 的 cmd 脚本并以 detached 方式启动，随后
 //      主进程退出：
@@ -18,9 +21,10 @@
 //      · 安装版：等 DSH Desktop 进程退出 → 以向导方式启动新 Setup 安装包
 //        （安装器会记录原安装目录并在完成后自动启动新版本）。
 //
-// 脚本全程写日志到 <userData>/updates/apply-update.log，并全部使用
-// System32 完整路径，避免应用 PATH 精简时 cmd/tasklist/find/ping/taskkill
-// 找不到导致更新脚本静默失败（“点安装没反应”的根因之一）。
+// 脚本全程写日志到 <userData>/updates/apply-update.log。cmd 脚本内统一用
+// System32 完整路径引用 ping（set "PG=...ping.exe"）与 PowerShell（PSEXE），
+// 避免应用 PATH 精简时找不到这些可执行文件导致更新脚本静默失败
+// （“点安装没反应”的根因之一）。
 
 const https = require('node:https');
 const fs = require('node:fs');
@@ -34,6 +38,14 @@ const MIN_VALID_BYTES = 64 * 1024 * 1024; // 完整安装包远大于 64MB，防
 
 function isPortable() {
   return !!process.env.PORTABLE_EXECUTABLE_DIR;
+}
+
+// 当前 CPU 架构：默认取 Electron 主进程的 process.arch（arm64 机器上为
+// arm64），可用 DSH_DESKTOP_ARCH 环境变量强制指定（供测试与排查使用）。
+function currentArch() {
+  const forced = String(process.env.DSH_DESKTOP_ARCH || '').trim();
+  if (forced === 'x64' || forced === 'arm64') return forced;
+  return process.arch === 'arm64' ? 'arm64' : 'x64';
 }
 
 /** 解析仓库地址（格式非法或缺省时回退到内置默认仓库）。 */
@@ -61,10 +73,46 @@ function apiEndpoints() {
 
 // --- HTTP ----------------------------------------------------------------
 
+// 解析 HTTPS_PROXY / https_proxy / HTTP_PROXY / http_proxy 环境变量中的第一个
+// 代理，用于国内/企业网络（国网等需代理访问 GitHub 的场景，issue #84）。返回
+// { href } 或 null。node:https 不支持 CONNECT 隧道，这里用「绝对 URL + Host 头」
+// 的代理请求形式（主流 HTTP/HTTPS 代理均接受）。
+function resolveHttpProxy() {
+  const raw = process.env.HTTPS_PROXY || process.env.https_proxy ||
+    process.env.HTTP_PROXY || process.env.http_proxy || '';
+  const parts = String(raw).split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+  for (const p of parts) {
+    try {
+      const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(p) ? p : 'http://' + p);
+      if (u.hostname) return { href: u.href };
+    } catch { /* 跳过无效代理 */ }
+  }
+  return null;
+}
+
+// 构造一次 http(s) 请求并返回 request 对象（响应走 onResponse 回调）。
+// 有可用代理时把请求发往代理（绝对 URL + Host 头），否则直连目标。
+// 调用方负责 error/timeout 监听。
+function rawRequest(url, requestHeaders, onResponse) {
+  const proxy = resolveHttpProxy();
+  if (proxy) {
+    const proxyUrl = new URL(proxy.href);
+    const mod = proxyUrl.protocol === 'https:' ? require('node:https') : require('node:http');
+    return mod.request(proxyUrl, {
+      method: 'GET',
+      path: url,
+      headers: { ...requestHeaders, Host: new URL(url).host },
+    }, onResponse);
+  }
+  const u = new URL(url);
+  const mod = u.protocol === 'https:' ? require('node:https') : require('node:http');
+  return mod.request(u, { method: 'GET', headers: requestHeaders }, onResponse);
+}
+
 function httpGetJson(url, headers = {}, timeoutMs = 20000, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('重定向次数过多'));
-    const req = https.get(url, { headers: { 'User-Agent': 'DSH-Desktop', ...headers } }, (res) => {
+    const req = rawRequest(url, { 'User-Agent': 'DSH-Desktop', ...headers }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         return httpGetJson(new URL(res.headers.location, url).toString(), headers, timeoutMs, redirects + 1).then(resolve, reject);
@@ -75,6 +123,7 @@ function httpGetJson(url, headers = {}, timeoutMs = 20000, redirects = 0) {
       }
       let body = '';
       res.setEncoding('utf8');
+      res.on('error', reject); // 响应流自身错误（罕见）同样收敛为 rejection
       res.on('data', (c) => {
         body += c;
         if (body.length > 4 * 1024 * 1024) req.destroy(new Error('响应过大'));
@@ -144,25 +193,60 @@ async function checkLatest(ctx, currentVersion) {
 
 // --- 资产选择 / 下载 -------------------------------------------------------
 
+// 部署平台：macos / win / null（其它平台不支持客户端自更新）。
+// DSH_DESKTOP_PLATFORM 可强制指定（仅用于资产选择等纯函数，供测试与排查；
+// 实际执行更新脚本仍以真实 process.platform 为准，避免测试误触发脚本）。
+function platformKind() {
+  const forced = String(process.env.DSH_DESKTOP_PLATFORM || '').trim();
+  if (forced === 'macos' || forced === 'win') return forced;
+  if (process.platform === 'darwin') return 'macos';
+  if (process.platform === 'win32') return 'win';
+  return null;
+}
+
 function selectAsset(release) {
-  const wanted = isPortable() ? /-portable-x64\.exe$/i : /-setup-.*-x64\.exe$/i;
+  const arch = currentArch();
+  const mac = platformKind() === 'macos';
+  // macOS 资产命名：DSH-Desktop-<版本>-macos-<arch>.zip / .dmg（zip 优先级更高，
+  // 免挂载即可自更新；dmg 兜底）。Windows 资产命名：win-portable / win-setup
+  // 前缀（v0.3.9+），旧命名（无 win- 前缀）由 -setup- 正则兼容。
+  const wanted = mac
+    ? new RegExp(`-macos-${arch}\\.(?:zip|dmg)$`, 'i')
+    : isPortable()
+      ? new RegExp(`-portable-${arch}\\.exe$`, 'i')
+      : new RegExp(`-setup-(?:.*-)?${arch}\\.exe$`, 'i');
   const direct = release.assets.find((a) => wanted.test(a.name));
   if (direct) return { parts: [direct], name: direct.name, totalSize: direct.size };
 
-  // Gitee 单文件 100MB 限制：安装包拆分为 <file>.part1 / <file>.part2 …
-  const base = isPortable()
-    ? `DSH-Desktop-${release.version}-portable-x64.exe`
-    : `DSH-Desktop-Setup-${release.version}-x64.exe`;
-  const parts = release.assets
-    .filter((a) => a.name.startsWith(base + '.part'))
-    .sort((a, b) => {
-      const n = (s) => parseInt(s.split('part').pop(), 10) || 0;
-      return n(a.name) - n(b.name);
-    });
-  if (!parts.length) {
-    throw new Error('未找到匹配的安装包资产（' + release.assets.map((a) => a.name).join(', ') + '）');
+  // Gitee 单文件 100MB 限制：安装包拆分为 <完整文件名>.part1 / .part2 …
+  // 优先匹配 v0.3.9+ 新命名（win-/macos- 前缀），同时兼容 Gitee 已发布的
+  // v0.3.9 旧命名分片（portable 与 Setup 均为无 win- 前缀的老命名）。
+  const bases = mac
+    ? [`DSH-Desktop-${release.version}-macos-${arch}.zip`]
+    : isPortable()
+      ? [
+          `DSH-Desktop-${release.version}-win-portable-${arch}.exe`,
+          `DSH-Desktop-${release.version}-portable-${arch}.exe`,
+        ]
+      : [
+          `DSH-Desktop-${release.version}-win-setup-${arch}.exe`,
+          `DSH-Desktop-Setup-${release.version}-${arch}.exe`,
+        ];
+  for (const base of bases) {
+    const n = (s) => parseInt(s.split('part').pop(), 10) || 0;
+    const parts = release.assets
+      .filter((a) => a.name.startsWith(base + '.part'))
+      .sort((a, b) => n(a.name) - n(b.name));
+    // 分片序号必须连续（1..N）：缺中间分片时拼接出的安装包损坏。下载侧
+    // 每片有 content-length 完整性校验，但缺块导致的「总大小恰好超过
+    // MIN_VALID_BYTES 下限」仍可能放行坏包（如仅缺尾部小块），这里直接
+    // 拒绝不连续的分片集，宁可用下一个命名候选或报错，也不拼坏包。
+    const seqOk = parts.every((p, i) => n(p.name) === i + 1);
+    if (parts.length && seqOk) {
+      return { parts, name: base, totalSize: parts.reduce((s, p) => s + p.size, 0) };
+    }
   }
-  return { parts, name: base, totalSize: parts.reduce((s, p) => s + p.size, 0) };
+  throw new Error('未找到匹配的安装包资产（' + release.assets.map((a) => a.name).join(', ') + '）');
 }
 
 function downloadFile(url, dest, { onProgress } = {}) {
@@ -173,13 +257,17 @@ function downloadFile(url, dest, { onProgress } = {}) {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; fn(value); } };
     const fail = (err) => {
-      file.close(() => {});
-      try { fs.rmSync(tmp, { force: true }); } catch {}
+      if (settled) return;
+      // 先关句柄再删临时文件：Windows 上句柄未关时 rmSync 会 EBUSY 被吞，
+      // 留下 .part 残留；等 close 回调再删（或删失败也无碍，下次覆盖）。
+      file.close(() => {
+        try { fs.rmSync(tmp, { force: true }); } catch {}
+      });
       finish(reject, err);
     };
     const request = (url2, redirects) => {
       if (redirects > 5) return fail(new Error('重定向次数过多'));
-      const req = https.get(url2, { headers: { 'User-Agent': 'DSH-Desktop' } }, (res) => {
+      const req = rawRequest(url2, { 'User-Agent': 'DSH-Desktop' }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
           return request(new URL(res.headers.location, url2).toString(), redirects + 1);
@@ -193,6 +281,13 @@ function downloadFile(url, dest, { onProgress } = {}) {
         res.on('aborted', () => fail(new Error('下载连接被中断（服务器提前断开）')));
         res.on('error', fail);
         const total = Number(res.headers['content-length'] || 0);
+        // 有 content-length 时校验完整性：静默截断（chunked 收尾但字节不齐）
+        // 不触发 aborted，历史实现会把残缺 exe 放行安装。
+        res.on('end', () => {
+          if (total > 0 && received !== total) {
+            return fail(new Error(`下载不完整（收到 ${received} / 声明 ${total} 字节）`));
+          }
+        });
         res.on('data', (c) => {
           received += c.length;
           if (onProgress) { try { onProgress(received, total); } catch {} }
@@ -201,6 +296,10 @@ function downloadFile(url, dest, { onProgress } = {}) {
       });
       req.setTimeout(60000, () => req.destroy(new Error('下载超时')));
       req.on('error', fail);
+      // 整体截止时间兜底：socket 空闲超时会在慢速「滴流」下不断复位（每次
+      // 数据都 <60s 到达时永不触发），没有整体上限的下载会永久转圈。
+      const deadline = setTimeout(() => req.destroy(new Error('下载总时长超过上限')), 60 * 60 * 1000);
+      req.on('close', () => clearTimeout(deadline));
     };
     request(url, 0);
     file.on('finish', () => {
@@ -213,20 +312,35 @@ function downloadFile(url, dest, { onProgress } = {}) {
 }
 
 async function concatFiles(sources, dest) {
+  // 写流从第一刻起挂 error 监听：合并期间磁盘满/EACCES 若无监听器会以
+  // 未捕获异常直接崩掉主进程（历史缺陷），且残留半截目标文件。
+  // 分片 pipe 期间（尤其第一片）写流必须已有用户级 error 监听器，否则一旦
+  // 写入失败，'error' 事件无监听器 → 未捕获异常 → 主进程崩溃（issue #70）。
   const out = fs.createWriteStream(dest);
-  for (const s of sources) {
+  let writeError = null;
+  out.on('error', (err) => { if (!writeError) writeError = err; });
+  try {
+    for (const s of sources) {
+      await new Promise((res, rej) => {
+        if (writeError) return rej(writeError);
+        const rs = fs.createReadStream(s);
+        rs.on('error', rej);
+        rs.on('end', res);
+        // 写流一旦出错，必须拒绝当前 pipe（否则源流不会因 { end:false } 结束，
+        // 该 Promise 将永久挂起）。清理统一在 catch 分支。
+        out.on('error', rej);
+        rs.pipe(out, { end: false });
+      });
+      fs.rmSync(s, { force: true });
+    }
     await new Promise((res, rej) => {
-      const rs = fs.createReadStream(s);
-      rs.on('error', rej);
-      rs.on('end', res);
-      rs.pipe(out, { end: false });
+      out.end(res);
     });
-    fs.rmSync(s, { force: true });
+  } catch (err) {
+    out.destroy();
+    try { fs.rmSync(dest, { force: true }); } catch {}
+    throw err;
   }
-  await new Promise((res, rej) => {
-    out.on('error', rej);
-    out.end(res);
-  });
 }
 
 async function downloadRelease(ctx, release, { onProgress } = {}) {
@@ -237,31 +351,67 @@ async function downloadRelease(ctx, release, { onProgress } = {}) {
   const finalPath = path.join(dir, sel.name);
   const partPaths = [];
   let merged = 0;
-  for (let i = 0; i < sel.parts.length; i++) {
-    const p = sel.parts[i];
-    ctx.log('client-update', `下载 ${p.name}（${Math.round(p.size / 1048576)} MB）`);
-    const dest = split ? finalPath + '.part' + (i + 1) : finalPath;
-    const res = await downloadFile(p.url, dest, {
-      onProgress: (r) => {
-        if (onProgress) onProgress(split ? merged + r : r, sel.totalSize);
-      },
-    });
-    if (split) { merged += res.size; partPaths.push(dest); }
-  }
-  if (split) {
-    ctx.log('client-update', `合并 ${partPaths.length} 个分片 → ${sel.name}`);
-    await concatFiles(partPaths, finalPath);
+  try {
+    for (let i = 0; i < sel.parts.length; i++) {
+      const p = sel.parts[i];
+      ctx.log('client-update', `下载 ${p.name}（${Math.round(p.size / 1048576)} MB）`);
+      const dest = split ? finalPath + '.part' + (i + 1) : finalPath;
+      const res = await downloadFile(p.url, dest, {
+        onProgress: (r) => {
+          if (onProgress) onProgress(split ? merged + r : r, sel.totalSize);
+        },
+      });
+      if (split) { merged += res.size; partPaths.push(dest); }
+    }
+    if (split) {
+      ctx.log('client-update', `合并 ${partPaths.length} 个分片 → ${sel.name}`);
+      await concatFiles(partPaths, finalPath);
+      partPaths.length = 0; // 分片已删除并合并
+    }
+  } catch (err) {
+    // 中途失败：已下载的分片不再有用，全部清理，避免 updates 目录堆积残片。
+    for (const p of partPaths) { try { fs.rmSync(p, { force: true }); } catch {} }
+    throw err;
   }
   const stat = fs.statSync(finalPath);
   if (stat.size < MIN_VALID_BYTES) {
     fs.rmSync(finalPath, { force: true });
     throw new Error('下载文件异常（仅 ' + Math.round(stat.size / 1048576) + ' MB），已丢弃');
   }
-  if (sel.totalSize > 0 && Math.abs(stat.size - sel.totalSize) > 2 * 1024 * 1024) {
+  if (split && sel.totalSize > 0 && stat.size !== sel.totalSize) {
+    // 分片场景：每片都按 content-length 完整校验过，合并后大小与上游声明
+    // 不一致只可能是分片集本身不完整/声明错误——宁可丢弃重试，也不能把
+    // 残缺安装包标记为「已下载待安装」（安装器失败后用户会看到
+    // 「下载了但从不弹安装」的经典困惑）。
+    fs.rmSync(finalPath, { force: true });
+    throw new Error('分片合并后大小与声明不一致（期望 ' + sel.totalSize + ' 实际 ' + stat.size + '），已丢弃，将重试');
+  }
+  if (!split && sel.totalSize > 0 && Math.abs(stat.size - sel.totalSize) > 2 * 1024 * 1024) {
     ctx.log('client-update', `大小与上游声明不一致：期望 ${sel.totalSize} 实际 ${stat.size}（继续，安装器会自校验）`);
   }
   ctx.log('client-update', `下载完成: ${finalPath}（${Math.round(stat.size / 1048576)} MB）`);
   return { filePath: finalPath, size: stat.size };
+}
+
+// 清理已处理（安装成功/版本落后/文件缺失）的待安装包及其 .part 分片残留。
+// 目的：避免「已下载但不再需要安装」的过时安装包（每包 120+MB）永久留在
+// updates 目录——用户看到它们会误以为「下载好了却从不弹安装」，且占用磁盘。
+// 幂等：目标文件已不存在时静默成功；不抛异常（删除失败不影响标记清理）。
+function cleanupPendingPackage(pending) {
+  if (!pending || typeof pending !== 'object' || !pending.path) return;
+  try {
+    fs.rmSync(pending.path, { force: true });
+  } catch {}
+  const dir = path.dirname(pending.path);
+  const base = path.basename(pending.path);
+  if (!base) return;
+  let entries = [];
+  try { entries = fs.readdirSync(dir); } catch { return; }
+  for (const f of entries) {
+    if (f.startsWith(base + '.part')) {
+      try { fs.rmSync(path.join(dir, f), { force: true }); } catch {}
+    }
+  }
 }
 
 // --- 应用更新（detached 脚本 + 主进程退出） ---------------------------------
@@ -287,7 +437,9 @@ const SYS = [
 //     的只读/目录型探针路径同样有效）：只读目录不再空等 10 分钟，直接降级
 //     为启动新 exe（与 README 承诺一致），并保留下载文件；
 //   · 替换失败且目录可写时，尽力用 .bak 还原当前版本并启动，绝不留坏 exe。
-function buildPortableCmd(logFile) {
+// 日志路径经 `%~1` 位置参数传入（脚本自身不内嵌任何路径，规避含空格路径的
+// cmd 引号剥离问题）。
+function buildPortableCmd() {
   return [
     '@echo off',
     SYS,
@@ -501,15 +653,116 @@ function buildNsisCmd() {
   ].join('\r\n');
 }
 
+// macOS 更新脚本（bash + 系统自带工具，无第三方依赖）：
+//   ditto  解压 zip（免挂载自更新；dmg 用 hdiutil attach/detach，脚本内分支）
+//   mv     同卷原子替换 /Applications/DSH Desktop.app（/tmp 与 /Applications
+//          在 macOS 同处数据卷，mv 不会跨卷失败；失败时用 ditto 复制兜底）
+//   xattr  解除 com.apple.quarantine（未签名构建首次启动不被 Gatekeeper 拦截）
+//   pgrep  等待当前 app 退出（quitForClientUpdate 已先退出主进程，兜底等待）
+//   open   替换完成后重启新版本
+// 失败自愈：备份 .bak → 替换失败还原旧版并启动；尽力保证应用绝不消失。
+function buildMacSh(logFile) {
+  return `#!/bin/bash
+LOG="$1"
+ASSET="$2"
+APP="$3"
+log() { printf '[%s] %s\\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+log "apply-update start (macos)"
+log "asset=$ASSET"
+log "app=$APP"
+# wait for the old process to exit (quitForClientUpdate exits first; safety net)
+for i in $(seq 1 20); do
+  if ! pgrep -f "$APP/Contents/MacOS" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+TMP="$(mktemp -d "\${TMPDIR:-/tmp}/dsh-update.XXXXXX")"
+NEWAPP=""
+IS_DMG=""
+case "$ASSET" in
+  *.dmg)
+    IS_DMG=1
+    MNT="$(hdiutil attach -nobrowse -readonly "$ASSET" | sed -n 's/.*\\/Volumes\\/\\(.*\\)$/\\/Volumes\\/\\1/p' | tail -1)"
+    if [ -z "$MNT" ]; then log "dmg attach failed"; rm -rf "$TMP"; exit 1; fi
+    NEWAPP="$(find "$MNT" -maxdepth 2 -name '*.app' -type d | head -1)"
+    ;;
+  *)
+    if ! ditto -x -k "$ASSET" "$TMP" 2>>"$LOG"; then
+      log "unzip failed with ditto"
+      rm -rf "$TMP" 2>/dev/null
+      exit 1
+    fi
+    NEWAPP="$(find "$TMP" -maxdepth 2 -name '*.app' -type d | head -1)"
+    ;;
+esac
+if [ -z "$NEWAPP" ]; then log "no .app found in archive"; fi
+if [ -n "$NEWAPP" ] && [ -d "$APP" ]; then
+  if [ -n "$IS_DMG" ]; then
+    mkdir -p "$TMP/copy" || true
+    ditto "$NEWAPP" "$TMP/copy/DSH Desktop.app" 2>>"$LOG" || true
+    NEWAPP="$TMP/copy/DSH Desktop.app"
+    hdiutil detach "$MNT" >/dev/null 2>&1 || true
+  fi
+  # clear quarantine: unsigned build must launch after auto-update without Gatekeeper blocking
+  xattr -dr com.apple.quarantine "$NEWAPP" 2>/dev/null || true
+  log "backing up current app"
+  BACKUP="$(dirname "$APP")/DSH Desktop.bak"
+  rm -rf "$BACKUP" 2>/dev/null || true
+  mv "$APP" "$BACKUP" 2>>"$LOG" || true
+  if ! mv "$NEWAPP" "$APP" 2>>"$LOG"; then
+    log "replace failed; copying instead"
+    rm -rf "$APP" 2>/dev/null || true
+    if ! ditto "$NEWAPP" "$APP" 2>>"$LOG"; then
+      log "replace failed; restoring backup"
+      rm -rf "$APP" 2>/dev/null || true
+      mv "$BACKUP" "$APP" 2>>"$LOG" || true
+    fi
+  fi
+  rm -rf "$BACKUP" 2>/dev/null || true
+fi
+rm -rf "$TMP" 2>/dev/null || true
+# launch the app whether or not replacement succeeded: never leave the user without a running app
+if [ -d "$APP" ]; then
+  log "launching app"
+  open "$APP" || true
+  log "apply-update done"
+  exit 0
+fi
+log "app missing after update; user must reinstall manually"
+exit 1
+`;
+}
+
 function applyUpdate(ctx, pending) {
+  // 更新脚本（Windows: cmd/ps1 + exe/安装器替换；macOS: bash + .app 替换）为
+  // 平台专属；其它平台（Linux 等）不支持客户端自更新，入口已降级为手动下载。
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
+    throw new Error('当前平台暂不支持客户端自动更新（请手动下载新版安装包）');
+  }
   const newExe = pending.path;
-  const portable = isPortable();
-  const oldExe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-  const procName = path.basename(oldExe, path.extname(oldExe)); // 如 "DSH Desktop"
   const dir = path.join(ctx.userDataDir, 'updates');
   const logFile = path.join(dir, 'apply-update.log');
   fs.mkdirSync(dir, { recursive: true });
   let script, child;
+  if (process.platform === 'darwin') {
+    // macOS：newExe = 下载的 .zip/.dmg；APP = 当前 .app 根（execPath 上溯三级）
+    const appPath = path.resolve(process.execPath, '..', '..', '..');
+    script = path.join(dir, 'apply-update.sh');
+    fs.writeFileSync(script, buildMacSh(logFile), { mode: 0o755 });
+    ctx.log('client-update', `启动 macOS 更新脚本: ${script}（资产: ${newExe}，app: ${appPath}）日志: ${logFile}`);
+    child = spawn('/bin/bash', [script, logFile, newExe, appPath], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', (err) => ctx.log('client-update', '启动 macOS 更新脚本失败: ' + err.message));
+    child.on('exit', (code) => {
+      if (code !== 0) ctx.log('client-update', `macOS 更新脚本提前退出（exit ${code}），日志: ${logFile}`);
+    });
+    child.unref();
+    return { script, logFile };
+  }
+  const portable = isPortable();
+  const oldExe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const procName = path.basename(oldExe, path.extname(oldExe)); // 如 "DSH Desktop"
   if (portable) {
     script = path.join(dir, 'apply-update.cmd');
     fs.writeFileSync(script, buildPortableCmd(logFile));
@@ -555,11 +808,16 @@ module.exports = {
   checkLatest,
   selectAsset,
   downloadRelease,
+  concatFiles,
   applyUpdate,
+  cleanupPendingPackage,
   buildPortableCmd,
   buildNsisPs1,
   buildNsisCmd,
-  isPortable,
+  buildMacSh,
+  platformKind,
+  currentArch,
   resolveRepos,
+  resolveHttpProxy,
   DEFAULT_REPOS,
 };

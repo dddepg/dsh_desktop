@@ -32,6 +32,8 @@
 :global([data-dsh-panel-host]) {
   position: fixed;
   inset: 0;
+  /* 右侧让位官方导航栏（对话消息导航条），目录栏打开时并排不遮挡。 */
+  right: var(--dsh-official-rail-clearance, 56px);
   z-index: 40;
   pointer-events: none;
 }
@@ -101,51 +103,7 @@
   cursor: default;
 }
 
-.panel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  /* Full height: the bottom panel squeezes only the center column, so the
-     right panel never gives up any vertical position. */
-  bottom: 0;
-  /* z-index 40: above the app's in-flow content, below the app's overlay
-     stack (100+), so menus/tooltips/modals always win over the panels
-     (issue #52). The toggle cluster (45) sits above it; the corner handle
-     is a child and stacks within the panel. */
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  /* Re-enable interaction inside the click-transparent panel host. */
-  pointer-events: auto;
-  /* The generic card surface (see the root contract above). Never
-     `--dsw-specific-sidebar-fill` — skin plugins restyle that token for the
-     app's own left nav and a panel consuming it loses its fill or clashes
-     with labels (#60/#105/#106). */
-  background: var(--dsw-alias-bg-layer-1);
-  border-left: 1px solid var(--dsw-alias-border-l2);
-  /* Bottom safe-area (notched phones): the drawer's bottom content clears
-     the home indicator; 0 on desktops. */
-  padding-bottom: env(safe-area-inset-bottom);
-  /* Expand/collapse slides the panel; fullscreen animates the width. */
-  transition:
-    transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
-    width var(--ds-transition-duration-slow) var(--ds-ease-in-out);
-}
-
-/* Collapsed: slid off-screen, interactive nothing, hidden after the slide. */
-.panelHidden {
-  transform: translateX(102%);
-  pointer-events: none;
-  visibility: hidden;
-  transition:
-    transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
-    width var(--ds-transition-duration-slow) var(--ds-ease-in-out),
-    visibility 0s linear var(--ds-transition-duration-slow);
-}
-
-/* Width drags write at pointer cadence; easing would detach the edge. */
-.panel[data-dragging] {
-  transition: none;
+ transition: none;
 }
 
 .panelResize {
@@ -401,6 +359,8 @@ body[data-dsh-sidebar-dragging] .bottomPanel {
   display: flex;
   overflow: hidden;
 }
+/* 面板打开时强制显示官方消息导航条：官方在 center column 变窄（含本插件面板占用）时会响应式隐藏它。 */
+:global(body:not([data-dsh-sidebar-collapsed])) :global(._9JjVLG_slot) { display: block !important; }
 
 .divider {
   position: relative;
@@ -2780,4 +2740,9 @@ body[data-dsh-sidebar-dragging] .bottomPanel {
 
 .openWithPinActive {
   color: var(--dsw-alias-state-business-primary);
+}
+
+/* 面板打开时真实收缩官方对话区（推挤而非覆盖）：官方 AppFrame 根。 */
+.cHLsAW_frame {
+  padding-right: var(--dsh-official-push, 0px) !important;
 }

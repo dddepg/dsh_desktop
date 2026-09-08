@@ -177,7 +177,7 @@ test('E. order 全局唯一、组内升序、补丁间依赖序成立', () => {
   // 输入」勾选——手声明路由不写 input 时 pi-ai 恒回落 ["text"]，多模态模型被当
   // 文本模型拒收图片；靶 dsh-client-ui-settings-models/lib/client.js，与
   // settings-models-resilience 同靶不同区段）。
-  assert.equal(PATCH_SPECS.length, 58, 'spec 总数应为 58');
+  assert.equal(PATCH_SPECS.length, 60, 'spec 总数应为 60');
   const orders = PATCH_SPECS.map((s) => s.order);
   assert.equal(new Set(orders).size, orders.length, 'order 必须全局唯一');
   const byId = Object.fromEntries(PATCH_SPECS.map((s) => [s.id, s]));

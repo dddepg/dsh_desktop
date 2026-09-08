@@ -9,11 +9,11 @@
 
 import { toErrorPayload, ValidationError } from '../core/errors.js'
 
-const str = (description) => ({ type: 'string', description, required: true })
-const strOpt = (description) => ({ type: 'string', description, required: false })
-const arrOpt = (description) => ({ type: 'array', items: { type: 'string' }, description, required: false })
-const numOpt = (description) => ({ type: 'number', description, required: false })
-const boolOpt = (description) => ({ type: 'boolean', description, required: false })
+const str = (description) => ({ type: 'string', description })
+const strOpt = (description) => ({ type: 'string', description })
+const arrOpt = (description) => ({ type: 'array', items: { type: 'string' }, description })
+const numOpt = (description) => ({ type: 'number', description })
+const boolOpt = (description) => ({ type: 'boolean', description })
 
 function params(props, required = []) {
   const properties = {}
@@ -257,7 +257,7 @@ export function registerTools(ctx, cardian) {
     name: 'cardian.import',
     description: '从 cardian.export 的 JSON 快照导入并还原知识中心。',
     behavior: 'idempotent',
-    parameters: params({ data: { type: 'object', description: 'export 返回的快照对象', required: true } }, ['data']),
+    parameters: params({ data: { type: 'object', description: 'export 返回的快照对象' } }, ['data']),
     async execute(args) {
       return cardian.importJson(args.data)
     },

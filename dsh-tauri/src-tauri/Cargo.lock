@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "bridge"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 dependencies = [
  "serde",
 ]
@@ -783,7 +783,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-tauri-app"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 dependencies = [
  "bridge",
  "embed-resource",
@@ -994,7 +994,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "fence"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 
 [[package]]
 name = "field-offset"
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "kernel-process"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
@@ -2227,7 +2227,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "poc-sidecar-spawn"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 dependencies = [
  "kernel-process",
 ]
@@ -2804,7 +2804,7 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
 name = "preview-server"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 
 [[package]]
 name = "proc-macro-crate"
@@ -3086,7 +3086,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3142,7 +3142,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "session-watcher"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 
 [[package]]
 name = "sha2"
@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "shell-core"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -3540,7 +3540,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4096,7 +4096,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4455,7 +4455,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4484,7 +4484,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4856,7 +4856,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5360,7 +5360,7 @@ dependencies = [
 
 [[package]]
 name = "wsl-backend"
-version = "0.6.2"
+version = "0.6.3-beta.3"
 dependencies = [
  "serde_json",
 ]

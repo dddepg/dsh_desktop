@@ -39,14 +39,10 @@ function mountOffpeak() {
     on: () => () => {},
     effect: (fn) => { cleanupFns.push(fn()); },
     logger: { warn: () => {}, error: () => {} },
-    get: () => undefined,
-    inject: (deps, cb) => {
-      cb({
-        get: () => undefined,
-        webServer: { register: (entry) => registered.push(entry) },
-        effect: (fn) => { fn(); },
-      });
-    },
+    // 属性访问形态（模块级 inject 导出声明）：插件 IIFE 直接用主 ctx。
+    webServer: { register: (entry) => registered.push(entry) },
+    apiProxy: undefined,
+    agentDefaultModel: undefined,
   };
   apply(ctx, {
     debug: true,

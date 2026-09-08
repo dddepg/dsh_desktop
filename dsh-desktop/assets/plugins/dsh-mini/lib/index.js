@@ -1006,6 +1006,19 @@ function startGateway(ctx) {
       sendJson(res, 405, { error: "method not allowed" });
       return;
     }
+    // dsh-desktop fix（0.6.3 检修）：网关 RPC 面与主端口 dispatchApi 的 loopback-only
+    // 口径对齐——gateway/config（改网关配置）与 gateway/token/reset（轮换 LAN 钥匙）
+    // 属本机特权操作，已配对的手机/局域网会话不得触达。methodName 取自路径切片
+    // （读 body 前即可判，快）。
+    if (
+      req.headers["x-dsh-mini-gateway"] === "1" || !isLoopback(req)
+    ) {
+      const m = /^(gateway\/config|gateway\/token\/reset)$/.test(methodName);
+      if (m) {
+        sendJson(res, 403, { error: "gateway config/token changes are loopback-only" });
+        return;
+      }
+    }
     // RPC body 上限与上传钳制对齐：session.prompt 携带 base64 图片（膨胀 ~1.33×），
     // 固定 16MB 会在 maxUploadMb≥12MB 时 413。用 maxUploadMb×1.6 留余量，至少 24MB。
     const cfgNow = loadConfig();

@@ -23,6 +23,12 @@ import { dirname, join } from "node:path";
 /** 稳定插件名（profile 组合中的行 id）。 */
 export const name = "offpeak";
 
+/** 注入服务声明（node 侧 cordis 标准形态：apply 内直接属性访问）。
+ * 只声明内核真实存在的服务：apiProxy / logger 在当前内核不存在，
+ * 多声明会导致 loader-isolation 永久 pending 隔离（13:54 实测），
+ * 全部路由静默缺失。日志直接用 console（stderr → web-err 可见）。 */
+export const inject = ["webServer", "agentDefaultModel"];
+
 /** 调价后价目表（元 / 百万 tokens，2026-08-17 生效）。 */
 export const PRICES = {
   flash: {
@@ -135,6 +141,7 @@ function peakStartOf(minutes, windows, weekday, date) {
 }
 
 export function apply(ctx, config = {}) {
+  console.log(`[offpeak] apply 进入（node ${process.version}）`);
   const profile = typeof config.profile === "string" && config.profile !== "" ? config.profile : argvProfile() ?? "web";
   const effectiveFrom = typeof config.effectiveFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(config.effectiveFrom)
     ? config.effectiveFrom
@@ -161,7 +168,8 @@ export function apply(ctx, config = {}) {
   let modelCache = { provider: "", model: "" };
   const readModel = (host) => {
     try {
-      const svc = host.get("agentDefaultModel");
+      // 新内核 cordis ctx 已移除 get()：优先属性访问（注入白名单内），旧形态回落 get。
+      const svc = typeof host.get === "function" ? host.get("agentDefaultModel") : host?.agentDefaultModel;
       if (svc !== undefined && typeof svc.currentSelection === "function") {
         const sel = svc.currentSelection();
         if (sel !== null && typeof sel === "object") {
@@ -228,9 +236,7 @@ export function apply(ctx, config = {}) {
         }
       }
     } catch (error) {
-      if (ctx.logger?.warn !== undefined) {
-        ctx.logger.warn(`[offpeak] state load failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      console.warn(`[offpeak] state load failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -243,9 +249,7 @@ export function apply(ctx, config = {}) {
       }, null, 2);
       writeFileSync(statePath, snapshot, "utf8");
     } catch (error) {
-      if (ctx.logger?.warn !== undefined) {
-        ctx.logger.warn(`[offpeak] state save failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      console.warn(`[offpeak] state save failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -287,7 +291,9 @@ export function apply(ctx, config = {}) {
     if (task.status === "executed" || task.status === "cancelled") return { ok: true, skipped: true };
     task.status = "running";
     try {
-      const api = apiProxyRef !== null ? apiProxyRef : ctx.get("apiProxy");
+      // 只用注入捕获的引用（apiProxyRef）：主 ctx 未声明 apiProxy，属性访问会被
+      // 注入守卫拦截（without inject）——不再回落主 ctx 越权访问。
+      const api = apiProxyRef;
       if (api === undefined || api === null || api.sessions === undefined || typeof api.sessions.prompt !== "function") {
         throw new Error(`apiProxy sessions.prompt unavailable (api=${api === undefined ? "undefined" : api === null ? "null" : "object"}, sessions=${api !== undefined && api !== null && api.sessions !== undefined ? "ok" : "missing"}, prompt=${api !== undefined && api !== null && api.sessions !== undefined && typeof api.sessions.prompt === "function" ? "ok" : "missing"})`);
       }
@@ -355,12 +361,13 @@ export function apply(ctx, config = {}) {
   }, "offpeak: scheduler");
 
   // ---- HTTP 路由 ----
-  ctx.inject(["webServer", "agentDefaultModel", "apiProxy"], (webCtx) => {
-    // 捕获 apiProxy 服务引用：定时执行复用与浏览器完全相同的提交路径。
-    apiProxyRef = webCtx.get("apiProxy") ?? null;
-    if (apiProxyRef === null && ctx.logger?.warn !== undefined) {
-      ctx.logger.warn("[offpeak] apiProxy not injectable — scheduled execution disabled");
-    }
+  // 立即执行块：webCtx 即注入后的主 ctx（属性访问形态，见模块级 inject 导出）。
+  ((webCtx) => {
+    // apiProxy：当前内核无此服务（属性访问即触发注入守卫，实测
+    // 「cannot get property apiProxy without inject」→ 整插件被隔离），
+    // apiProxyRef 保持 null 降级：executeTask 走既有兑底报错，
+    // 路由/提醒主功能不受影响；后续按新内核服务形态重接定时执行。
+    console.warn("[offpeak] apiProxy 服务在当前内核不存在——定时执行暂不可用（提醒/路由不受影响）");
     const sameOrigin = (req) => {
       const origin = req.headers.origin;
       const host = req.headers.host;
@@ -680,7 +687,8 @@ export function apply(ctx, config = {}) {
       }
       sendJson(res, 200, { ok: true, reminder: state.reminder });
     });
-  });
+    console.log("[offpeak] 路由注册完成（/ds-offpeak/*）");
+  })(ctx);
 }
 
 /** 供回归单测引用的纯判定函数（无副作用；不改插件注册面）。 */

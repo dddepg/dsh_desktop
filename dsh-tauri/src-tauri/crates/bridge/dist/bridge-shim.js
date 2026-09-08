@@ -799,7 +799,9 @@
         css = document.createElement('style');
         css.setAttribute('data-for', CHROME_ID);
         css.textContent =
-          '#' + BALL_ID + '{position:fixed;top:10px;right:10px;z-index:2147483000;width:32px;height:32px;' +
+          // 0.6.3（mac UI 反馈）：球放右下角——右上角与内核 web UI 顶栏的侧边栏开关等
+          // 图标重合（球 z-index 顶格直接遮挡，侧边栏无可视入口）；右下为常见悬浮球位。
+          '#' + BALL_ID + '{position:fixed;bottom:14px;right:14px;z-index:2147483000;width:32px;height:32px;' +
           'display:grid;place-items:center;border:1px solid color-mix(in srgb,var(--dsw-alias-border-l1,rgba(127,127,127,.25)) 60%,transparent);' +
           'border-radius:9px;padding:0;outline:none;cursor:pointer;user-select:none;box-sizing:border-box;' +
           '--dch-bg:#0b1220;--dch-fg:#e6ecff;--dch-fg2:#b8c5ea;--dch-fg3:#93a5d8;--dch-line:rgba(255,255,255,.09);--dch-hover:rgba(255,255,255,.09);' +
@@ -814,6 +816,9 @@
           '#' + BALL_ID + ':hover{background:var(--dsw-alias-interactive-bg-hover,var(--dch-hover));color:var(--dsw-alias-label-primary,var(--dch-fg))}' +
           '#' + BALL_ID + ' svg{width:14px;height:14px;display:block;fill:currentColor;stroke:none}' +
           // 红点：与条形态 dch-dot 同款（markUpdateDot 直接打在钮上）。
+          // 0.6.3：球形态下面板锚球向上展开（原 top:CHROME_H+8 使面板与球分离两处，
+          // 观感即「菜单内容跑远/跑到别的屏幕」）；高度兜底滚动不出视口。
+          '#' + BALL_ID + ' > ' + '#' + MENU_ID + '{top:auto;bottom:52px;right:0;width:272px;max-width:calc(100vw - 16px);max-height:calc(100vh - 72px);overflow-y:auto}' +
           '#' + BALL_ID + '.dch-dot::after{content:"";position:absolute;top:2px;right:2px;width:7px;height:7px;' +
           'border-radius:50%;background:#ff5f57;box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-bg-base,var(--dch-bg,#0b1220)) 88%,transparent)}';
         head.appendChild(css);
@@ -903,7 +908,7 @@
         // ⋯ 菜单面板（Electron dch-menu 同款观感）：颜色同条消费内核
         // --dsw-alias-*；兜底走条上 --dsh-theme 档位的 --dch-*（面板是条的
         // 子元素，自定义属性继承即自动跟随换档）。
-        '#' + MENU_ID + '{position:fixed;top:' + (CHROME_H + 8) + 'px;right:8px;width:272px;z-index:2147483001;' +
+        '#' + MENU_ID + '{position:fixed;top:' + (CHROME_H + 8) + 'px;right:8px;width:272px;max-width:calc(100vw - 16px);z-index:2147483001;' +
           'box-sizing:border-box;padding:6px;border-radius:14px;' +
           'background:var(--dsw-alias-bg-layer-2,color-mix(in srgb,var(--dch-bg,#0b1220) 92%,white));' +
           'border:1px solid var(--dsw-alias-border-l1,var(--dch-line,rgba(255,255,255,.1)));' +

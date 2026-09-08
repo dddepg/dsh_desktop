@@ -1,5 +1,227 @@
 # Changelog — DSH Desktop（Tauri 版，主线架构 v0.5.0 起）
 
+# DSH Desktop v0.6.3 — 开发中
+
+## 🐛 重点：思考行折叠态空白（contain:size 回归）
+
+- **症状**：「思考」行在折叠状态显示为一条空白文本框（标题与首行摘要不可见），展开后正常。
+- **根因**：dsh-client-ui-chat「思考」行折叠态 CSS 用了 `contain:size layout`——size
+  containment 让浏览器把元素宽度按「内容为空」计算；与第三方主题（如 maid-atelier）
+  给助手消息内容区加的 `align-self:flex-start`（宽度随内容收缩）叠加后，折叠行宽度
+  被计算成 0px，只剩一条 24px 高的空白条。
+- **修法**：新增 boot 补丁 `reasoning-row-collapse-width`（order 400，靶
+  `dsh-client-ui-chat/lib/client.js`）：去掉清空宽度的 size containment、保留 layout
+  containment，显式 height 继续锁折叠高度——无主题用户零可感知差异。临时探测服务
+  DOM 实测：折叠行宽 0px → 614.8px、「思考」标题与首行摘要恢复可见。
+- **兼容性**：锚点含 CSS modules 哈希类（`.t2QtNG_root`）——靶是 compat-pin 锁版的
+  vendored 固定字节，哈希即稳定锚；全文件唯一出现（探针实测）。
+- **补丁注册表 58→59**（file spec，cli:false）；ta3 boot 链 / ta6 矩阵·审计·契约
+  计数基线同步；新增单测 8 用例（pristine 唯一性 / changed·幂等 / 锚变异失配安全 /
+  产物注释配对与语法 / dev 树收口）。
+
+## 🐛 重点 2：跨版本 session 日志未知事件把老对话整个判死
+
+- **症状**：更新/降级版本后打开老会话报「历史加载失败: … contains event type
+  \"slice/digest\" (seq 387) unknown to this harness … refusing to interpret the log」——
+  一条新版 harness 写入的事件让整个会话拒绝加载。
+- **根因**：dsh-session-persistence 的 `assertEventsSupported` 对「未知且未标
+  ignorable」的事件 fail-closed（上游防误读损坏日志的有意设计）——但历史会话
+  以读为主，一条未来事件就连坐整个会话打不开，代价过重。
+- **修法**：新增 boot 补丁 `session-unknown-event-tolerance`（order 401，靶
+  `dsh-session-persistence/lib/index.js`）：整方法替换为「收集未知事件 + 跳过 +
+  `[dsh-unknown-event-tolerance]` 前缀一次性告警（列类型@seq，前 5 条），诚实说明
+  若新版写入了语义事件渲染可能有缺口」；`assertVersion` 的格式版本拒绝仍
+  fail-closed（真正不兼容的日志照旧拒载）。跳过在每次读取时一致发生，重建语义自洽。
+- **行为验证（vm 实跑产物方法体）**：未知事件被跳过并告警（slice/digest@387 在列）、
+  ignorable/已知类型正常放行、全部已知时零告警。**补丁注册表 59→60**；计数基线
+  同步（ta3 / ta6 全家 / file transform 42→43）；新增单测 10 用例。
+
+## 🎨 重点 3：深色 UI 颜色治理（第一批）
+
+- **全盘审计**：以内核权威色板（`--dsw-alias-*` 语义别名 + `--dsw-static-*` 色阶，
+  413 个变量）为基准，扫描全部配套插件的硬编码颜色面（hex/rgba vs var 使用比），
+  产出 227 条嫌疑规则清单并逐类甄别。
+- **会话地图（dsh-synapse）深色适配修复（最大不协调源）**：上游 dark 样式挂在
+  `[data-theme="dark"]` 属性上，而内核深色标志是 `body[data-ds-dark-theme]`——
+  属性从未被设置，深色宿主下画布恒浅色渲染（大白块）。现以主题桥镜像属性并
+  跟随切换，上游全部 dark 规则（约 60 条）真正生效。
+- **会话管理（dsh-session-manager）**：「删除」类危险按钮的红改为主题错误色
+  `var(--dsw-alias-state-error-primary)`，与全局按钮体系对齐（原硬编码 #c43f50
+  在深浅主题下均为同一色调）。
+- **甄别结论（不动的部分）**：各插件 `var(--dsw-alias-*, #fallback)` 形态为正确
+  写法（深色由内核自动切换），不计入问题；`dsh-mini` 的 gui/ 为手机端快照页面，
+  与桌面主题无关；宠物浮窗（harness-pet）浅色自成一体、终端 ANSI c30 色板与
+  quest 模式 iframe 主题注入三项列入后续批次。
+
+## 🎨 重点 4：失效 CSS 变量引用治理（深色「文字看不见」的真根因）
+
+- **根因**：多个插件引用了内核**不存在**的变量名（凭记忆写的幻觉别名，如
+  `state-info-*`/`state-warning-*`/`bg-elevated`/`bg-page`/`fill-*`/`stroke-*`/
+  `border-secondary` 等共 29 种）——CSS `var()` 查不到定义时**静默走 fallback**，
+  而 fallback 多为浅色值 → 深色下文字/控件不可见或刺眼，且深浅切换完全失效。
+- **修法**：以内核 78 个 `--dsw-alias-*` 语义别名清单为准，把 33 种幻觉名批量
+  正名（94 处 / 13 文件）：信息蓝→`state-business-primary`、警告琥珀→`state-warn-*`、
+  强调→`brand-primary`、三级填充→`interactive-bg-hover`、描边/分隔→`border-l2`、
+  浮层→`bg-layer-2`、反白字→`label-primary-inverted` 等——修复后全部跟随主题
+  深浅自动切换。剩余 24 种失效名为插件自有变量（设计内 fallback）、运行时注入
+  变量（JS setProperty）或深度分叉包内部变量（better-sidebar 系），列入后续
+  批次单独处理。
+- **佐证**：治理前后双源审计（内核定义 413 项 ∪ 各插件自定义 vs 全部 var() 引用），
+  全部改动文件语法核验零失败。
+
+## 🔍 重点 5：远程控制（手机连接）功能全面检修
+
+- **体检方式**：新增 LAN 网关端到端集成测试（11 用例，起真实 0.0.0.0 网关 +
+  loopback 上游桩 + 模拟手机来源）——此前该链路仅有纯函数单测，鉴权/反代/
+  GUI 静态/WS 下推的完整链路零覆盖。
+- **修复 1（安全）**：网关 RPC 面（`/api/gateway/config`、`/api/gateway/token/reset`）
+  缺少 loopback-only 约束——已配对的手机可以改网关配置（端口/上传限额/公网
+  模式）甚至轮换 LAN 钥匙，与主端口同一操作的 loopback-only 口径不一致。已
+  对齐：非本机直连来源一律 403（e2e 断言覆盖）。
+- **修复 2（深色）**：dsh-mini 桌面设置浮层的 4 处幻觉变量名（`accent-primary`、
+  `line`）正名为 `brand-primary` / `border-l2`（第三案失效变量治理的一部分）。
+- **体检通过项（未发现问题，记录在案）**：token 恒时比对（防侧信道）、日志
+  token 掩码、`body[data-ds-dark-theme]` token 体系、publicMode 外网拦截（含
+  同机隧道 Host 头识破）、路径穿越防护、RPC 信封错误结构、SSE/WS 下推协议
+  对齐官方 api-proxy、网关监听失败降级（EADDRINUSE 不外发 URL）。
+- **验证**：网关 e2e 11/11 绿（含 LAN 来源 token 换会话、反代盖章头、上游 401
+  透传、config 改动 403、WS 基线帧）；既有 dsh-mini 单测 15/15 绿。
+
+## 🐧 重点 6：dsh 命令暴露——终端直接安装插件/skill
+
+- **什么变了**：DSH 启动自检会在安装根写入 `dsh.cmd`（指向 vendored node +
+  内核 CLI，免系统环境依赖），并把安装根**幂等追加到用户 PATH**（保留未展开
+  变量形态）。之后在任何终端：
+
+  ```
+  dsh plugin --profile web add <package>   # 安装插件
+  dsh profile list                          # profile 管理
+  dsh dump-config                           # 导出配置诊断
+  ```
+
+- **幂等**：shim 内容一致不重写、PATH 已含安装根不重复追加；失败仅日志告警
+  不阻断启动；开发态（debug 构建）不写入，避免污染开发机。
+- **验证**：cargo check 通过；`shim_content_shape` 单测覆盖 shim 形态
+  （vendored node 路径/参数透传/引号成对）。
+- 该能力同时打通 skill/插件的手动安装链路（issue #180 的根解之一）。
+
+## 🍎 重点 7：macOS ⋯ 悬浮球两修（图标遮挡 + 菜单错位）
+
+- **遮挡侧边栏（无可视入口）**：mac 原生标题栏形态下 ⋯ 悬浮球固定在
+  `top:10 right:10`、z-index 顶格——正好叠在内核 web UI 右上角的侧边栏开关
+  等图标上，点击被球截胡。**球挪到右下角**（`bottom:14 right:14`，常见悬浮
+  球位），web UI 顶栏图标恢复可点。
+- **菜单内容「跨屏幕」观感**：球形态下面板仍按条形态的 `top` 定位——面板
+  与球分离两处，观感即「菜单内容跑到别处」。**面板改为锚球向上展开**
+  （`bottom:52px` 对齐球），并加视口兜底（`max-width/max-height + 滚动`），
+  任何窗口尺寸下面板都完整落在窗口内。
+- 条形态（Windows 全宽条）的菜单定位不受影响（覆盖规则只挂在球下）。
+- **验证**：bridge-shim.js 语法核验过；ta13 shim 完整性 soak 测试 1/1 绿；
+  shim.rs 形态断言锚（injectMenuBall/BALL_ID 等）全部保留。
+- 若多屏缩放切换后仍有 fixed 层错位（WKWebView 合成层怪癖），请截屏反馈——
+  那条线需要换原生窗口菜单方案（已备案）。
+
+## 📚 重点 8：知识中心打开时开始新对话 → 面板自动收起
+
+- **此前**：知识中心面板展开时点「新对话」，新会话已创建但被铺开的面板盖住，
+  需要手动再关一次面板。
+- **现在**：知识中心订阅会话列表（`sessions.list` 的 current 变化，与侧边栏
+  插件同一订阅面）——**开始新对话或切换会话时面板自动收起**，新对话即刻可见；
+  面板内主动操作不受影响。
+- 会话服务不可达时静默降级（面板手动关闭仍可用）。
+
+## 📝 重点 9：侧边栏编辑器「按变更查看 diff」
+
+- **什么变了**：右侧编辑器打开被 agent 改过的文件时，工具条出现「≡ 变更历史」
+  钮（紧邻已有的 ± diff 高亮开关）——展开后**按变更倒序列出每一次改动**：
+  组头为 `#序号 · 操作徽标 · 时间 · +N −M` 统计，展开即该次改动的 diff 行，
+  行首提示符 `+`（绿，新增）/ `−`（红，删除）/ `±`（黄，成对修改）/ 空白（上下文），
+  行背景按类型着色（全部走 DSH 色令牌，深浅主题跟随）。
+- **数据零新链**：与「文件」视图同一官方投影（会话日志持久化的 tool/result
+  meta.diffs），store 仅增量暴露 `queryFileChanges(sessionId, path)` 查询；
+  diff 引擎与「文件」视图同源（splitLines/diffRows/diffStats 同仓复制，语义一致）。
+- **验证**：新增单测 6 用例（三分类/成对 mod/空串边界/统计折算/接线形态）全绿；
+  better-sidebar 既有 editor/chunk 测试 42/42 无回归。
+
+## 🗑️ 重点 10：知识中心（cardian）内置卸载
+
+- **什么变了**：`dsh-cardian`（知识中心）不再随包分发——同步链不再安装，
+  已安装实例升级后自动移除其目录与 patch 行；
+- **数据不受影响**：知识库（Obsidian vault）与记忆数据都在用户目录，与插件
+  生命周期解耦；需要恢复时从 git 历史（本仓库 `assets/plugins/dsh-cardian`）
+  或上游（myYangyunfan/dsh_cardian）重装即可；
+- **同期对 cardian 的其它投入**（会话联动收起、深色适配）随源码一并归档。
+
+## 🔁 重点 11：托盘「一键重启」修复（安装版点了只退出）
+
+- **根因**：`AppHandle::restart()` 的时序是「spawn 新实例 → 本进程 exit」——
+  旧进程存活期间，**single-instance 插件把 spawn 出的新实例判为重复启动直接
+  退出** → 净效果只剩退出（安装版用户实测；主程序运行检测只查主 exe，
+  查不到内核 node 子进程的残留锁是另一个独立问题，已在安装器侧清理）。
+- **修复**：托盘重启改为**游离 cmd 进程延迟 2 秒拉起**（`CREATE_NO_WINDOW`
+  防黑窗）——旧实例先退出、单实例锁释放后新实例才启动；EXITING 闸门与
+  内核树 shutdown 顺序不变。
+- **v2 勘误（beta.2 实测）**：cmd 复合命令作为单一参数时，Rust 的 MSVCRT
+  转义会把 `start ""` 的引号写成 cmd 不认识的形态，路径被引号残渣污染
+  （实测弹「Windows 找不到文件」）。改为**原子 args**（每个 token 独立
+  传参，空标题以裸 `""` 到达 cmd，exe 由 Rust 按需加引号）——零转义残留；
+  形态测试同步加防回退锚（复合串标志物禁现）。
+- **验证**：restart 形态测试更新为新契约（延迟拉起 + exit(0) + 禁止回退
+  `app.restart()`），Rust 全量 550 测试通过。
+
+## 🌉 重点 12：WinInet 系统代理桥接（「只开系统代理」开箱即用）
+
+- **背景**：国内个人用户最常见形态是只开 Windows「系统代理」（WinInet，
+  注册表）——它对 Node 完全不可见，且父环境无 `HTTPS_PROXY` 等变量时，
+  beta2 的内核白名单透传也无从透传 → 内核直连 googleapis 等被墙域必超时
+  （2026-09-08 内置 node 四组对照实测实锤：仅 `HTTPS_PROXY` 不生效，
+  `HTTPS_PROXY`+`NODE_USE_ENV_PROXY=1` 组合才通）。
+- **修复**：壳 spawn 内核前探测 WinInet 系统代理（`ProxyEnable`/
+  `ProxyServer`，支持单地址与分协议两种形态），仅在用户环境**缺失**代理
+  变量时注入 `HTTPS_PROXY`/`HTTP_PROXY`（用户显式配置优先）、
+  `NO_PROXY=localhost,127.0.0.1,::1`（本机回环不进代理）与
+  `NODE_USE_ENV_PROXY=1`（Node 24 全局 fetch 走环境变量代理）；
+  注入动作落 `desktop.log` 可查。非 Windows 不生效。
+- **验证**：解析三形态 + 用户变量优先级 + 注入在位形态锚点测试；
+  Rust 全量 551 测试通过。
+
+## 🔧 重点 13：工具名点号形态归一化（千问套餐 unknown tool 修复）+ v1 勘误
+
+- **现象**：千问模型按说明文档的点号形态调用插件工具（`cardian.memory_get`），
+  注册名实为下划线（`cardian_memory_get`）→ `unknown tool` 报错；
+- **修复（host 解析层 v2 兜底，所有插件受益）**：`resolveExecution` 首查 miss
+  且名字含点号时，按「`.→_` / `_→-`」形态重试；与 v1（`¬` 噪音形态）独立
+  共存，对已分发实例可升级补装；
+- **v1 勘误**：单测运行行为实测发现 v1 注入块对 `const tool` 赋值必抛
+  `Assignment to constant variable`（即 v1 从未真正生效）——补丁同步把锚行
+  `const` → `let`，重试赋值、`collapses` 检查与返回语义原样成立；
+- **验证**：新增单测（双注入/升级/幂等 + vm 真执行：点号命中、¬ 命中、
+  正常名零开销、真不存在仍抛错）6/6 通过。
+
+## 🧾 重点 14：cardian 工具 schema 修复（Vertex/Gemini 400）
+
+- **现象**：Gemini/Vertex 全量工具请求 400：`value at properties.ref must be
+  a list`——cardian 工具的参数 schema 在**属性定义内部**写了 `required: true`
+  （非法 JSON Schema；`required` 只能是对象级的字符串数组），完整 schema
+  直传给 Gemini 时被其严格校验拒绝（内核 4xx dump 实锤 128 处内嵌布尔）。
+- **修复**：cardian 的 `str` 参数工厂与 `data` 属性定义剥除内嵌
+  `required: true`——必填语义已由对象级 `required: ["ref", ...]` 数组表达，
+  模型侧行为不变；
+- **澄清**：裸属性映射形态（`parameters: { uuid: { required: true } }`，
+  better-sidebar/super-injector 惯例）由内核规范化器提升为数组，合法无需改。
+- **诊断路径**：内核 LLM 4xx dump（`~/.dsh/llm-4xx-dump.log`）直接定位病灶
+  schema 片段。
+
+## 🧭 重点 15：目录栏推挤式布局适配 + 对话节点导航条移除
+
+- **现象**：打开资源管理器目录栏时，右缘的官方消息导航条消失——官方在
+  对话区宽度不足时会**响应式隐藏**它（非遮挡），单纯挪动面板位置无效；
+- **修复（推挤式适配）**：目录栏打开时，官方 AppFrame 真实收缩让出面板
+  宽度（`--dsh-official-push` 变量实时联动面板开合与拖拽宽度）——对话区、
+  消息导航条整体左移，与目录栏**并排显示**；面板收起时布局完全还原；
+- **@vlln/dsh-navbar 移除**：社区「对话节点导航条」与官方消息导航条功能
+  重复且悬浮层互相干扰，按用户要求移除（dev 源保留，恢复只需回加清单）。
+
 # DSH Desktop v0.6.2 — 全平台
 
 > 本版本两条主线：① 单项根治「多模态模型说我发不了图片」——设置页模型卡新增

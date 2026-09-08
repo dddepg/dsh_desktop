@@ -451,6 +451,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 托盘失败不影响主窗可用性（日志告警即止）。
+    // dsh CLI shim（终端执行 dsh 命令 → 插件/skill 安装链）：异步自检，
+    // 写 shim + 幂等追加用户 PATH；失败仅日志告警不阻断启动。
+    tauri::async_runtime::spawn_blocking(|| commands::dsh_cli::ensure_dsh_cli_shim());
+
     if let Err(e) = setup_tray(app.handle()) {
         eprintln!("[tray] 初始化失败（不影响主窗）: {e}");
     }
@@ -862,7 +866,25 @@ fn setup_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
                         sv.shutdown();
                     }
                 }
-                app.restart();
+                // 一键重启修复（安装版用户实测「点了只退出」）：AppHandle::restart()
+                // 的时序是 spawn 新实例 → 本进程 exit，而旧进程存活期间
+                // single-instance 插件会把新实例当重复启动直接退出 → 净效果只剩退出。
+                // 改为由游离 cmd 进程延迟拉起（CREATE_NO_WINDOW 防黑窗），本进程
+                // 照常 exit(0) 收尾；延迟期内旧实例退出、单实例锁释放。
+                // v2（beta.2 实测勘误）：复合命令不得作为单一参数——Rust 的
+                // MSVCRT 转义会把 start "" 写成 start \"\"（cmd 不认 \" 转义），
+                // 引号配对错乱污染路径（实测「Windows 找不到文件」弹窗）。改为
+                // 原子 args：空标题以裸 "" 到达 cmd，exe 含空格由 Rust 加引号
+                // 且无内部引号 → 零转义残留。
+                {
+                    use std::os::windows::process::CommandExt;
+                    let exe = std::env::current_exe().unwrap_or_else(|_| "dsh-tauri-app.exe".into());
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "timeout", "/t", "2", "/nobreak", ">nul", "&", "start", "", &exe.to_string_lossy()])
+                        .creation_flags(0x0800_0000)
+                        .spawn();
+                }
+                app.exit(0);
             }
             "quit" => {
                 // 先置位退出闸门再 shutdown：shutdown 杀内核到 app.exit 拆
@@ -985,10 +1007,13 @@ mod tray_behavior_shape {
         }
     }
 
-    /// 一键重启竞态闸门（对齐 quit）：托盘「一键重启」必须先置位 EXITING、
-    /// 再 shutdown 杀内核树，最后 app.restart() 重执行——顺序不可颠倒，
-    /// 否则在飞 KernelReady 事件会戳销毁中的窗口（EARLY-PANIC 实测），或
-    /// 内核树漏杀留孤儿 node 进程。
+    /// 一键重启竞态闸门（对齐 quit）+ 延迟拉起（0.6.3 安装版修复）：托盘「一键
+    /// 重启」必须先置位 EXITING 再 shutdown 杀内核树——顺序不可颠倒，否则在飞
+    /// KernelReady 事件会戳销毁中的窗口（EARLY-PANIC 实测），或内核树漏杀留孤儿
+    /// node 进程。**不再调 app.restart()**：其「spawn 新实例 → 本进程 exit」时序
+    /// 会被 single-instance 插件拦下（旧进程存活期间新实例被判重复启动直接退出——
+    /// 安装版用户实测「一键重启变直接退出」），改为游离 cmd 进程延迟拉起，
+    /// 本进程 exit(0) 收尾。
     #[test]
     fn restart_arms_exiting_gate_before_shutdown() {
         let src = src();
@@ -997,9 +1022,15 @@ mod tray_behavior_shape {
         let restart = restart.split("\"quit\" =>").next().expect("restart 分支收尾");
         let gate = restart.find("EXITING.store(true").expect("restart 必须置位退出闸门");
         let shutdown = restart.find("sv.shutdown()").expect("restart 必须收尾 supervisor");
-        let relaunch = restart.find("app.restart()").expect("restart 必须调 app.restart 重执行");
+        let delay_spawn = restart.find("\"start\", \"\"").expect("restart 必须经 cmd 延迟拉起");
+        let exit = restart.find("app.exit(0)").expect("restart 必须 exit(0) 收尾");
         assert!(gate < shutdown, "EXITING 置位必须先于 shutdown（先关竞态窗口）");
-        assert!(shutdown < relaunch, "shutdown 杀内核必须先于 app.restart 重执行");
+        assert!(shutdown < delay_spawn && delay_spawn < exit, "shutdown 杀内核必须先于延迟拉起与 exit");
+        assert!(!restart.contains("app.restart()"), "不得回退到会被 single-instance 拦截的 app.restart()");
+        // beta.2 勘误锚点：复合命令禁止作为单一参数（MSVCRT 转义会污染 start 的
+        // 空标题引号，cmd 不认转义，路径被污染实测「找不到文件」弹窗），
+        // 必须原子 args。标志物：复合串必含 ">nul & start" 连续片段。
+        assert!(!restart.contains(">nul & start"), "复合命令不得作为单一参数（须原子 args 传裸空标题）");
     }
 
     /// 退出竞态闸门（tao Destroyed panic 实测修复）：托盘「退出」必须先置位

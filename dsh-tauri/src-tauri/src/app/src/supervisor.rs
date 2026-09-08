@@ -964,6 +964,20 @@ impl Supervisor {
             cmd.args(&spec.node_args).arg(&spec.bin_js).args(&spec.web_args);
             // 监管标识（main.js childEnv 语义）。
             cmd.env("DSH_DESKTOP_SUPERVISED", "1").env("NO_COLOR", "1");
+            // WinInet 系统代理桥接（0.6.3 beta.3）：国内个人用户最常见形态是
+            // 「只开 Windows 系统代理」——WinInet（注册表）对 Node 完全不可见，
+            // 父环境无代理变量时 beta2 白名单也无从透传 → 内核直连 googleapis
+            // 等被墙域必超时（2026-09-08 内置 node 四组对照实测实锤：仅
+            // HTTPS_PROXY 不生效，HTTPS_PROXY+NODE_USE_ENV_PROXY=1 才通）。
+            // 此处探测注册表代理，仅在父环境缺失时注入（用户显式配置优先）；
+            // NO_PROXY 固定放行本机回环（内核自身 127.0.0.1 请求不进代理）。
+            let proxy_injection = system_proxy_env_injection();
+            if !proxy_injection.is_empty() {
+                for (k, v) in &proxy_injection {
+                    cmd.env(k, v);
+                }
+                log_line(&format!("WinInet 系统代理桥接注入内核: {proxy_injection:?}"));
+            }
             cmd.current_dir(&self.app_dir).stdin(Stdio::null())
                 .stdout(Stdio::piped()).stderr(Stdio::piped())
                 .creation_flags_win();
@@ -1700,6 +1714,131 @@ fn log_line(msg: &str) {
     let (h, m, sec) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
     println!("[supervisor {h:02}:{m:02}:{sec:02}] {msg}");
     file_log(&format!("[supervisor {h:02}:{m:02}:{sec:02}] {msg}"));
+}
+
+// ---- WinInet 系统代理桥接（0.6.3 beta.3，见 spawn_kernel 注入点注释）----
+
+/// 纯函数：ProxyServer 原始值 → 代理 URL。`127.0.0.1:7892`（全协议单地址）；
+/// `ftp=…;https=…;http=…`（分协议：https 优先、空值跳过、http 兑底）；
+/// 已带 scheme 原样；空/无法解析 → None。
+fn parse_wininet_proxy_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let picked = if raw.contains(';') {
+        let mut https_pick: Option<String> = None;
+        let mut http_pick: Option<String> = None;
+        for part in raw.split(';') {
+            let p = part.trim().to_ascii_lowercase();
+            if let Some(v) = p.strip_prefix("https=") {
+                if !v.is_empty() {
+                    https_pick = Some(v.to_string());
+                    break;
+                }
+                continue;
+            }
+            if http_pick.is_none() {
+                if let Some(v) = p.strip_prefix("http=") {
+                    if !v.is_empty() {
+                        http_pick = Some(v.to_string());
+                    }
+                }
+            }
+        }
+        https_pick.or(http_pick)?
+    } else {
+        raw.to_string()
+    };
+    let picked = picked.trim();
+    if picked.is_empty() {
+        return None;
+    }
+    if picked.contains("://") {
+        Some(picked.to_string())
+    } else {
+        Some(format!("http://{picked}"))
+    }
+}
+
+/// 纯函数：代理 URL + 父环境探测 → 注入清单。用户显式配置优先：
+/// HTTPS_PROXY/HTTP_PROXY/ALL_PROXY（任一形态）在场则不注入代理对；
+/// NO_PROXY / NODE_USE_ENV_PROXY 按各自键独立判断（显式值含 =0 也尊重）。
+fn proxy_env_injection(proxy_url: &str, has_env: &dyn Fn(&str) -> bool) -> Vec<(String, String)> {
+    let user_proxy_set = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .any(|k| has_env(k));
+    let mut out: Vec<(String, String)> = Vec::new();
+    if !user_proxy_set {
+        out.push(("HTTPS_PROXY".into(), proxy_url.into()));
+        out.push(("HTTP_PROXY".into(), proxy_url.into()));
+        if !has_env("NO_PROXY") && !has_env("no_proxy") {
+            out.push(("NO_PROXY".into(), "localhost,127.0.0.1,::1".into()));
+        }
+    }
+    if !has_env("NODE_USE_ENV_PROXY") {
+        out.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+    }
+    out
+}
+
+/// 注册表薄壳（Windows）：HKCU Internet Settings 的 ProxyEnable==1 + ProxyServer。
+#[cfg(windows)]
+fn wininet_system_proxy_url() -> Option<String> {
+    // windows-api 是 windows crate 的别名（避让本 crate 的 pub mod windows）。
+    use windows_api::core::PCWSTR;
+    use windows_api::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
+    const SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+    let subkey: Vec<u16> = SUBKEY.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let enable_name: Vec<u16> = "ProxyEnable".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut enable: u32 = 0;
+        let mut enable_cb = std::mem::size_of::<u32>() as u32;
+        let r = RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            PCWSTR(enable_name.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(std::ptr::addr_of_mut!(enable).cast::<core::ffi::c_void>()),
+            Some(&mut enable_cb),
+        );
+        if r.is_err() || enable != 1 {
+            return None;
+        }
+        let server_name: Vec<u16> = "ProxyServer".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut buf = [0u16; 2048];
+        let mut cb = (buf.len() * std::mem::size_of::<u16>()) as u32;
+        let r = RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            PCWSTR(server_name.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast::<core::ffi::c_void>()),
+            Some(&mut cb),
+        );
+        if r.is_err() {
+            return None;
+        }
+        let len = (cb as usize / 2).min(buf.len());
+        let raw = String::from_utf16_lossy(&buf[..len]);
+        parse_wininet_proxy_url(raw.trim_end_matches('\0'))
+    }
+}
+
+/// 非 Windows：恒 None（桥接只在 Windows 生效）。
+#[cfg(not(windows))]
+fn wininet_system_proxy_url() -> Option<String> {
+    None
+}
+
+/// 组合入口：spawn_kernel 注入点调用；未启用/读不到/用户已配置 → 空清单。
+fn system_proxy_env_injection() -> Vec<(String, String)> {
+    match wininet_system_proxy_url() {
+        Some(url) => proxy_env_injection(&url, &|k| std::env::var_os(k).is_some()),
+        None => Vec::new(),
+    }
 }
 
 /// 落盘日志（logs/desktop.log）：supervisor/路由事件双写（stdout + 文件）。
@@ -2591,6 +2730,47 @@ Content-Length: 0
         // 显式注入 "PATH"），白名单透传断言必须按 ASCII 大小写折叠核对。
         assert!(envs.keys().any(|k| k.eq_ignore_ascii_case("PATH")), "白名单 PATH 必须透传: {envs:?}");
         std::env::remove_var("NODE_OPTIONS");
+    }
+
+    /// WinInet 系统代理桥接（beta.3）：ProxyServer 三形态解析 + 用户显式
+    /// 环境变量优先 + spawn_kernel 注入在位锚点。
+    #[test]
+    fn wininet_proxy_bridge_parses_and_respects_user_env() {
+        // 解析：全协议单地址 / 分协议 https 优先（空值跳过 http 兑底）/ 已带 scheme / 空。
+        assert_eq!(parse_wininet_proxy_url("127.0.0.1:7892").as_deref(), Some("http://127.0.0.1:7892"));
+        assert_eq!(
+            parse_wininet_proxy_url("ftp=1.1.1.1:21;https=10.0.0.2:8443;http=10.0.0.2:8080").as_deref(),
+            Some("http://10.0.0.2:8443")
+        );
+        assert_eq!(parse_wininet_proxy_url("https=;http=10.0.0.2:8080").as_deref(), Some("http://10.0.0.2:8080"));
+        assert_eq!(parse_wininet_proxy_url("http://127.0.0.1:7892").as_deref(), Some("http://127.0.0.1:7892"));
+        assert_eq!(parse_wininet_proxy_url(""), None);
+        assert_eq!(parse_wininet_proxy_url("   "), None);
+        // 注入：无用户代理变量 → 代理对 + NO_PROXY + NODE_USE_ENV_PROXY。
+        let none = |_: &str| false;
+        let inj = proxy_env_injection("http://127.0.0.1:7892", &none);
+        assert!(inj.contains(&("HTTPS_PROXY".to_string(), "http://127.0.0.1:7892".to_string())));
+        assert!(inj.contains(&("HTTP_PROXY".to_string(), "http://127.0.0.1:7892".to_string())));
+        assert!(inj.contains(&("NO_PROXY".to_string(), "localhost,127.0.0.1,::1".to_string())));
+        assert!(inj.contains(&("NODE_USE_ENV_PROXY".to_string(), "1".to_string())));
+        // 用户已有 HTTPS_PROXY → 不注入代理对与 NO_PROXY，仍补 NODE_USE_ENV_PROXY。
+        let has_https = |k: &str| k.eq_ignore_ascii_case("HTTPS_PROXY");
+        let inj2 = proxy_env_injection("http://127.0.0.1:7892", &has_https);
+        assert!(inj2.iter().all(|(k, _)| !matches!(k.as_str(), "HTTPS_PROXY" | "HTTP_PROXY" | "NO_PROXY")));
+        assert!(inj2.contains(&("NODE_USE_ENV_PROXY".to_string(), "1".to_string())));
+        // 显式 NO_PROXY / NODE_USE_ENV_PROXY（含 =0）尊重不覆盖。
+        let has_no_proxy = |k: &str| k.eq_ignore_ascii_case("NO_PROXY");
+        assert!(proxy_env_injection("http://x:1", &has_no_proxy).iter().all(|(k, _)| k != "NO_PROXY"));
+        let has_flag = |k: &str| k.eq_ignore_ascii_case("NODE_USE_ENV_PROXY");
+        assert!(proxy_env_injection("http://x:1", &has_flag).iter().all(|(k, _)| k != "NODE_USE_ENV_PROXY"));
+        // 形态锚点：spawn_kernel local 分支必须含桥接注入调用（防回退）。
+        let src = include_str!("supervisor.rs").replace("\r\n", "\n");
+        let seg = src
+            .split("fn spawn_kernel")
+            .nth(1)
+            .and_then(|s| s.split("/// 内核退出处理").next())
+            .expect("spawn_kernel 段");
+        assert!(seg.contains("system_proxy_env_injection()"), "spawn_kernel 必须含 WinInet 桥接注入");
     }
 
     /// 形态（v0.5.4 Node 三级解析接线）：构造经 resolve_node_with +

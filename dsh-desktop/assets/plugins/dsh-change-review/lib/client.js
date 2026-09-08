@@ -223,7 +223,7 @@ window.__ModuleLoader__.load({
       ".__cr_label{font-size:13px;font-weight:600}" +
       ".__cr_btn{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 14px;font:inherit;font-size:13px;cursor:pointer}" +
       ".__cr_btn:hover{border-color:var(--dsw-alias-state-business-primary)}" +
-      ".__cr_btnPrimary{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-on-accent)}" +
+      ".__cr_btnPrimary{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary-inverted)}" +
       ".__cr_ok{font-size:12px;color:var(--dsw-alias-state-success-primary)}" +
       ".__cr_err{font-size:12px;color:var(--dsw-alias-state-error-primary)}";
     var tagId = "dsh-change-review/main.css";

@@ -530,7 +530,7 @@ window.__ModuleLoader__.load({
 
 			const phaseBadge = (row) => {
 				if (row.phase === "failed") return badge(L.badgeFailed, "var(--dsw-alias-state-error-primary, #ff7a85)");
-				if (row.phase === "loading" || row.phase === "pending") return badge(L.badgePendingLoad, "var(--dsw-alias-state-info-primary, #5b9bd5)");
+				if (row.phase === "loading" || row.phase === "pending") return badge(L.badgePendingLoad, "var(--dsw-alias-state-business-primary, #5b9bd5)");
 				return null;
 			};
 
@@ -582,26 +582,26 @@ window.__ModuleLoader__.load({
 								}),
 								jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, flex: "none" }, children: [
 									upd && upd.hasUpdate && !upd.applied && !removed
-										? badge("↑ " + upd.latest, "var(--dsw-alias-state-info-primary, #5b9bd5)")
+										? badge("↑ " + upd.latest, "var(--dsw-alias-state-business-primary, #5b9bd5)")
 										: null,
-									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-info-primary, #5b9bd5)") : null,
+									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-business-primary, #5b9bd5)") : null,
 									jsx("span", { style: { width: 7, height: 7, borderRadius: 999, background: dotColor, flex: "none" } }),
 									switchControl(row, on, onToggle, pendingId === row.id)
 								] })
 							]
 						}),
 						isOpen ? jsxs("div", {
-							style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--dsw-alias-divider-weak, rgba(128,128,128,0.14))", display: "flex", flexDirection: "column", gap: 8 },
+							style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.14))", display: "flex", flexDirection: "column", gap: 8 },
 							children: [
 								jsx("span", { style: { fontSize: 12, opacity: 0.7, lineHeight: 1.5 }, children: row.description || L.descFallback }),
 								jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, children: [
-									on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warning-primary, #d99a3d)"),
+									on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warn-primary, #d99a3d)"),
 									failed ? badge(L.badgeFailed, "var(--dsw-alias-state-error-primary, #ff7a85)") : null,
 									upd && !upd.error ? (upd.hasUpdate && !upd.applied
-										? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-info-primary, #5b9bd5)")
+										? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-business-primary, #5b9bd5)")
 										: (!upd.applied ? badge(L.upToDate + (upd.current ? " v" + upd.current : ""), "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))") : null))
 										: null,
-									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-info-primary, #5b9bd5)") : null
+									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-business-primary, #5b9bd5)") : null
 								] }),
 								jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6 }, children: [
 									row.group !== "core" && !row.hasConfig && !removed ? jsx("button", {
@@ -638,7 +638,7 @@ window.__ModuleLoader__.load({
 				cursor: "pointer",
 				whiteSpace: "nowrap",
 				border: "1px solid " + (danger ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"),
-				color: danger ? "var(--dsw-alias-state-error-primary, #ff7a85)" : (accent ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit"),
+				color: danger ? "var(--dsw-alias-state-error-primary, #ff7a85)" : (accent ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit"),
 				background: "transparent"
 			});
 
@@ -650,21 +650,21 @@ window.__ModuleLoader__.load({
 				const upd = updateMap && updateMap[row.id];
 				return jsxs("div", {
 					key: row.id,
-					style: { display: "flex", flexDirection: "column", gap: 5, padding: "10px 0", borderBottom: "1px solid var(--dsw-alias-divider-weak, rgba(128,128,128,0.16))", opacity: removed ? 0.62 : 1 },
+					style: { display: "flex", flexDirection: "column", gap: 5, padding: "10px 0", borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.16))", opacity: removed ? 0.62 : 1 },
 					children: [
 						jsxs("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", minWidth: 0 }, children: [
 							jsx("span", { style: { fontWeight: 600 }, children: rowName(row) || rowPkg(row) }),
 							jsx("span", { style: { fontSize: 12, opacity: 0.55, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: rowPkg(row) }),
-							on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warning-primary, #d99a3d)"),
+							on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warn-primary, #d99a3d)"),
 							phaseBadge(row),
 							removed ? badge(L.uninstalledTag, "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))") : null
 						] }),
 						jsx("span", { style: { fontSize: 12, opacity: 0.65, lineHeight: 1.5 }, children: row.description || L.descFallback }),
 						jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginTop: 2 }, children: [
 							jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, children: [
-								rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-info-primary, #5b9bd5)") : null,
+								rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-business-primary, #5b9bd5)") : null,
 								upd && !upd.error && !upd.applied ? (upd.hasUpdate
-									? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-info-primary, #5b9bd5)")
+									? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-business-primary, #5b9bd5)")
 									: badge(L.upToDate + (upd.current ? " v" + upd.current : ""), "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))"))
 									: null,
 								upd && upd.applied ? badge(L.updateDone + (upd.applied !== true ? "（v" + upd.applied + "）" : ""), "var(--dsw-alias-state-success-primary, #4caf7d)") : null
@@ -745,9 +745,9 @@ window.__ModuleLoader__.load({
 				fontSize: 12,
 				padding: "3px 12px",
 				borderRadius: 12,
-				border: "1px solid " + (active || hot ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"),
-				background: active || hot ? "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 12%, transparent)" : "transparent",
-				color: active || hot ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit",
+				border: "1px solid " + (active || hot ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"),
+				background: active || hot ? "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 12%, transparent)" : "transparent",
+				color: active || hot ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit",
 				cursor: "pointer"
 			});
 			const chip = (key, label, count, hot) => jsx("button", {
@@ -777,15 +777,15 @@ window.__ModuleLoader__.load({
 			const viewBtn = (active, label, onClick) => jsx("button", {
 				type: "button",
 				onClick: onClick,
-				style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (active ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"), background: active ? "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 12%, transparent)" : "transparent", color: active ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit" },
+				style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (active ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"), background: active ? "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 12%, transparent)" : "transparent", color: active ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit" },
 				children: label
 			});
-			const msgColor = /失败|错误/.test(actionMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-info-primary, #5b9bd5)";
+			const msgColor = /失败|错误/.test(actionMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-business-primary, #5b9bd5)";
 			// 有可更新项的个数（工具栏「检查更新」按钮据此高亮 + 显示数量）
 			const updTotal = updateMap ? Object.values(updateMap).filter((it) => it && it.hasUpdate).length : 0;
 
 			// 无效条目横幅（死条目一键清理；疑似陈旧禁用只透出）。
-			const warnColor = "var(--dsw-alias-state-warning-primary, #d99a3d)";
+			const warnColor = "var(--dsw-alias-state-warn-primary, #d99a3d)";
 			const deadList = deadScan && Array.isArray(deadScan.dead) ? deadScan.dead : [];
 			const staleList = deadScan && Array.isArray(deadScan.stale) ? deadScan.stale : [];
 			const deadBanner = deadList.length === 0 ? null : jsxs("div", {
@@ -827,7 +827,7 @@ window.__ModuleLoader__.load({
 							type: "button",
 							disabled: checkingUpdates,
 							onClick: doCheckUpdates,
-							style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (checkingUpdates ? "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))" : (updTotal > 0 ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))")), background: checkingUpdates ? "transparent" : (updTotal > 0 ? "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 12%, transparent)" : "transparent"), color: checkingUpdates ? "inherit" : (updTotal > 0 ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit") },
+							style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (checkingUpdates ? "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))" : (updTotal > 0 ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))")), background: checkingUpdates ? "transparent" : (updTotal > 0 ? "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 12%, transparent)" : "transparent"), color: checkingUpdates ? "inherit" : (updTotal > 0 ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit") },
 							children: checkingUpdates ? L.checking : (updTotal > 0 ? L.checkUpdates + " · " + updTotal : L.checkUpdates)
 						}),
 						jsx("button", {
@@ -900,7 +900,7 @@ window.__ModuleLoader__.load({
 			}, []);
 
 			const errColor = "var(--dsw-alias-state-error-primary, #ff7a85)";
-			const warnColor = "var(--dsw-alias-state-warning-primary, #d99a3d)";
+			const warnColor = "var(--dsw-alias-state-warn-primary, #d99a3d)";
 			const okColor = "var(--dsw-alias-state-success-primary, #4caf7d)";
 			const body = (() => {
 				if (health.kind === "loading") return jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: L.healthRunning });
@@ -952,7 +952,7 @@ window.__ModuleLoader__.load({
 					.finally(() => setBusy(false));
 			}, [busy, list]);
 			react.useEffect(() => { detect(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
-			const warnColor = "var(--dsw-alias-state-warning-primary, #d99a3d)";
+			const warnColor = "var(--dsw-alias-state-warn-primary, #d99a3d)";
 			const pending = (entries || []).filter((e) => e && e.fiberPhase === "pending");
 			return jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: [
 				jsx("div", { style: { fontSize: 11, opacity: 0.55 }, children: L.removedHint }),
@@ -1171,7 +1171,7 @@ window.__ModuleLoader__.load({
 				style: { display: "flex", flexDirection: "column", gap: 8, padding: "12px 14px", borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))" },
 				children: [jsx("span", { style: { fontSize: 13, fontWeight: 600 }, children: title }), childrenJsx]
 			});
-			const msgColor = /失败|错误/.test(bkMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-info-primary, #5b9bd5)";
+			const msgColor = /失败|错误/.test(bkMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-business-primary, #5b9bd5)";
 
 			// 诊断报告三色区块渲染
 			const diagBody = (() => {
@@ -1186,7 +1186,7 @@ window.__ModuleLoader__.load({
 				// 每次自愈写入 userData/self-heal-history.json，随诊断报告带回）。
 				const selfHealBox = (items) => {
 					if (!items || items.length === 0) return null;
-					return jsxs("div", { style: { fontSize: 12, padding: "8px 10px", borderRadius: 8, marginTop: 6, background: "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 10%, transparent)", color: "var(--dsw-alias-state-info-primary, #5b9bd5)", display: "flex", flexDirection: "column", gap: 3 }, children: [
+					return jsxs("div", { style: { fontSize: 12, padding: "8px 10px", borderRadius: 8, marginTop: 6, background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 10%, transparent)", color: "var(--dsw-alias-state-business-primary, #5b9bd5)", display: "flex", flexDirection: "column", gap: 3 }, children: [
 						jsx("span", { style: { fontWeight: 600 }, children: L.diagSelfHealTitle }),
 						items.map((it, i) => jsx("div", { key: i, style: { wordBreak: "break-all" }, children: (it.kind === "overlay" ? L.diagSelfHealDisabled : it.kind === "patch-layer" ? L.diagSelfHealReset : L.diagSelfHealRemoved).replace("{0}", (it.kind === "patch-layer" && it.backup ? String(it.backup).split(/[\\/]/).pop() : (it.names || []).join("、"))) + "（" + new Date(it.ts).toLocaleString() + "）" }))
 					] });
@@ -1205,7 +1205,7 @@ window.__ModuleLoader__.load({
 				return jsxs("div", { children: [
 					selfHealBox(selfHeal),
 					section(L.diagErrors, errs, "var(--dsw-alias-state-error-primary, #ff7a85)", "⛔"),
-					section(L.diagWarnings, warns, "var(--dsw-alias-state-warning-primary, #d99a3d)", "⚠"),
+					section(L.diagWarnings, warns, "var(--dsw-alias-state-warn-primary, #d99a3d)", "⚠"),
 					section(L.diagInfos, infos, "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))", "ℹ")
 				] });
 			})();
@@ -1234,7 +1234,7 @@ window.__ModuleLoader__.load({
 						if (!c.issues || c.issues.length === 0) return jsx("div", { key: c.name, style: { opacity: 0.85, wordBreak: "break-all" }, children: "✔ " + c.name + (c.source ? "（" + c.source + "）" : "") });
 						return jsxs("div", { key: c.name, style: { wordBreak: "break-all" }, children: [
 							jsx("span", { children: c.name + "（" + c.source + "）" }),
-							jsx("ul", { style: { margin: "2px 0 0", paddingLeft: 16 }, children: c.issues.map((it, i) => jsx("li", { key: i, style: { color: it.level === "error" ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-warning-primary, #d99a3d)" }, children: (it.level === "error" ? "⛔ " : "⚠ ") + it.text })) })
+							jsx("ul", { style: { margin: "2px 0 0", paddingLeft: 16 }, children: c.issues.map((it, i) => jsx("li", { key: i, style: { color: it.level === "error" ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-warn-primary, #d99a3d)" }, children: (it.level === "error" ? "⛔ " : "⚠ ") + it.text })) })
 						] });
 					}) }) : null
 				] });
@@ -1249,7 +1249,7 @@ window.__ModuleLoader__.load({
 				return jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }, children: [
 					r.conflicts.length === 0 && r.suggested && r.suggested.ok
 						? jsx("div", { style: { color: "var(--dsw-alias-state-success-primary, #4caf7d)" }, children: L.diagOrderOk })
-						: (r.conflicts.length > 0 ? jsx("div", { style: { color: "var(--dsw-alias-state-warning-primary, #d99a3d)", fontWeight: 600 }, children: "⚠ " + L.diagOrderConflictN.replace("{0}", String(r.conflicts.length)) }) : null),
+						: (r.conflicts.length > 0 ? jsx("div", { style: { color: "var(--dsw-alias-state-warn-primary, #d99a3d)", fontWeight: 600 }, children: "⚠ " + L.diagOrderConflictN.replace("{0}", String(r.conflicts.length)) }) : null),
 					r.conflicts.length > 0 ? jsx("ul", { style: { margin: 0, paddingLeft: 16 }, children: r.conflicts.map((c, i) => jsx("li", { key: i, style: { wordBreak: "break-all" }, children: "「" + c.name + "」" + c.reason })) }) : null,
 					r.suggested && r.suggested.ok ? jsxs("div", { children: [
 						jsx("div", { style: { opacity: 0.7, marginTop: 2 }, children: "建议顺序：" }),
@@ -1284,7 +1284,7 @@ window.__ModuleLoader__.load({
 					jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }, children: [
 						actionBtn(bkBusy ? L.restorePicking : L.restorePick, doPickRestore, bkBusy, false)
 					] }),
-					restorePreview ? jsxs("div", { style: { marginTop: 8, padding: 10, borderRadius: 8, border: "1px solid var(--dsw-alias-state-warning-primary, #d99a3d)", background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary, #d99a3d) 8%, transparent)", fontSize: 12 }, children: [
+					restorePreview ? jsxs("div", { style: { marginTop: 8, padding: 10, borderRadius: 8, border: "1px solid var(--dsw-alias-state-warn-primary, #d99a3d)", background: "color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d99a3d) 8%, transparent)", fontSize: 12 }, children: [
 						jsx("div", { style: { fontWeight: 600 }, children: L.restorePreview }),
 						jsx("div", { style: { marginTop: 4, opacity: 0.85, wordBreak: "break-all" }, children: restorePreview.file }),
 						jsx("div", { style: { marginTop: 2, opacity: 0.85 }, children: L.restorePreviewFiles.replace("{0}", String(restorePreview.files == null ? 0 : restorePreview.files)).replace("{1}", restorePreview.createdAt ? new Date(restorePreview.createdAt).toLocaleString() : "-") }),

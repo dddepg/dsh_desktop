@@ -23,10 +23,8 @@ const COMPANION_PLUGINS = [
   { id: 'terminal', name: '@deepseek-ai/dsh-terminal-tab' },
   { id: 'better-sidebar', name: 'dsh-better-sidebar' },
   { id: 'harness-pet', name: 'harness-pet' },
-  // 对话节点导航条（vlln/dsh-navbar，MIT）：对话区右缘节点串快速跳转
-  // user 消息（悬停预览/点击跳转/滚轮切换），取代 conversation-tweaks
-  // 内置的会话滑轨。
-  { id: 'dsh-navbar', name: '@vlln/dsh-navbar' },
+// @vlln/dsh-navbar（对话节点导航条）已按用户要求移除（0.6.3-beta.3）；
+	// 恢复方式：git 历史取回本清单条目 + assets/plugins/dsh-navbar。
   // 对话删除与归档管理（本仓库内置）：会话行菜单删除按钮 + 设置内归档管理
   // 面板（恢复/删除）。依赖 patch-session-manage.js 的官方包运行时补丁。
   { id: 'dsh-session-manager', name: 'dsh-session-manager' },
@@ -118,12 +116,8 @@ const COMPANION_PLUGINS = [
   // 折叠为前几行 + 「展开」遮罩，点击展开全文、再点「收起」收回；短消息零
   // 侵入、不碰代码块/图片/表格。纯客户端（DOM 定位 + CSS 折叠 + 事件委托）。
   { id: 'input-fold', name: 'dsh-input-fold' },
-  // 知识中心（myYangyunfan/dsh_cardian，MIT）：RepoWiki / 知识卡片 / 记忆
-  // 三区知识库，全部落地本地 Obsidian 仓库；宿主半边注册 cardian.* 工具族与
-  // Typert 远端网关（remote.cardianRemote.*，typert-protocol 走安装根解析，
-  // 同 dsh-hub 先例），客户端半边经 sidebar.footer.action + shell.overlay
-  // 提供「知识树」面板；RAG 知识概览预注入系统提示。
-  // 上游：https://github.com/myYangyunfan/dsh_cardian
+  // 知识中心（myYangyunfan/dsh_cardian，MIT）：RepoWiki / 知识卡片 / 记忆三区知识库；
+  // 0.6.3 曾短暂内置卸载，实测后恢复（用户决定保留）。
   { id: 'cardian', name: 'dsh-cardian' },
 ];
 

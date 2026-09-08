@@ -1,6 +1,24 @@
 window.__ModuleLoader__.load({
   id: 'dsh-synapse',
   factory: () => {
+    // DSH Desktop 深色适配桥（0.6.3 第三案）：内核深色标志是 body[data-ds-dark-theme]
+    // （dsh-client-ui-theme 服务维护，切换整套 --dsw-* token），而本插件的 dark 规则
+    // 挂在 [data-theme="dark"] 上——上游没有任何代码设置它，深色宿主下本画布恒浅色
+    // 渲染（白块）。镜像属性到 <html> 并跟随切换，让上游 dark 样式真正生效。
+    (() => {
+      const sync = () => {
+        const dark = document.body && document.body.hasAttribute('data-ds-dark-theme');
+        const root = document.documentElement;
+        const want = dark ? 'dark' : 'light';
+        if (root.getAttribute('data-theme') !== want) root.setAttribute('data-theme', want);
+      };
+      try { sync(); } catch {}
+      if (typeof MutationObserver !== 'undefined' && document.body) {
+        new MutationObserver(sync).observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] });
+      } else {
+        document.addEventListener('DOMContentLoaded', sync, { once: true });
+      }
+    })();
     const module = { exports: {} }
     const currentSession = ctx => {
       const snapshot = ctx.sessions.list.getSnapshot()

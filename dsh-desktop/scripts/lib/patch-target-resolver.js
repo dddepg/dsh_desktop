@@ -52,6 +52,8 @@ const SKILL_UI_PKG_REL = path.join('dsh-client-ui-skill', 'lib', 'client.js');
 const WORKSPACE_PKG_REL = path.join('dsh-client-ui-workspace', 'lib', 'client.js');
 const EXPOSE_PKG_REL = path.join('dsh-host-apiproxy', 'lib', 'index.js');
 const PERSISTENCE_PKG_REL = path.join('dsh-session-persistence-jsonl', 'lib', 'index.js');
+// 核心持久层（assertEventsSupported 所在；jsonl 是其后端实现，两者不同包）。
+const SESSION_PERSISTENCE_CORE_PKG_REL = path.join('dsh-session-persistence', 'lib', 'index.js');
 const SLOT_KEY_COMPAT_PKG_REL = path.join('dsh-client-ui-slots', 'lib', 'index.js');
 const SLOT_UNKEYED_COMPAT_PKG_REL = path.join('dsh-cordis-client-runner', 'lib', 'client.js');
 const SLOT_COMPAT_PKG_RELS = [SLOT_KEY_COMPAT_PKG_REL, SLOT_UNKEYED_COMPAT_PKG_REL];
@@ -290,6 +292,7 @@ module.exports = {
   WORKSPACE_PKG_REL,
   EXPOSE_PKG_REL,
   PERSISTENCE_PKG_REL,
+  SESSION_PERSISTENCE_CORE_PKG_REL,
   SLOT_KEY_COMPAT_PKG_REL,
   SLOT_UNKEYED_COMPAT_PKG_REL,
   SLOT_COMPAT_PKG_RELS,

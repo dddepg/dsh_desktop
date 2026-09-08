@@ -3061,29 +3061,24 @@ function createCardian(options = {}) {
 //#region src/tools.js
 const str = (description) => ({
 	type: "string",
-	description,
-	required: true
+	description
 });
 const strOpt = (description) => ({
 	type: "string",
-	description,
-	required: false
+	description
 });
 const arrOpt = (description) => ({
 	type: "array",
 	items: { type: "string" },
-	description,
-	required: false
+	description
 });
 const numOpt = (description) => ({
 	type: "number",
-	description,
-	required: false
+	description
 });
 const boolOpt = (description) => ({
 	type: "boolean",
-	description,
-	required: false
+	description
 });
 function params(props, required = []) {
 	const properties = {};
@@ -3325,8 +3320,7 @@ function registerTools(ctx, cardian) {
 		behavior: "idempotent",
 		parameters: params({ data: {
 			type: "object",
-			description: "export 返回的快照对象",
-			required: true
+			description: "export 返回的快照对象"
 		} }, ["data"]),
 		async execute(args) {
 			return cardian.importJson(args.data);

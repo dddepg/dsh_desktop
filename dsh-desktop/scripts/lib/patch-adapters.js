@@ -119,6 +119,10 @@ const { patchSchedulerGuard } = require('./scheduler-guard-patch');
 // 工具调用 name 为空指引（unknown tool ""——ToolNotFoundError 对空 name 特判
 // 三向指引：协议错位 / 中转网关剥离 / 模型输出崩坏，非空 name 原语义不变）。
 const { patchEmptyToolName } = require('./empty-tool-name-patch');
+// 工具名怪字符归一化兑底（cardian ¬_¬ 噪音；host 解析层一次性兑底，所有插件受益）。
+const { patchToolNameMojibake } = require('./tool-name-mojibake-patch');
+// 工具 schema 布尔 required 出口清洗（Gemini 400 根治，见 schema-boolean-required-patch.js）。
+const { patchSchemaBooleanRequired } = require('./schema-boolean-required-patch');
 
 // ---------------------------------------------------------------------------
 // 文本模型自动识图补丁（原 main.js applyImageSendFix 内联 transform）。
@@ -2448,6 +2452,51 @@ const { transform4xxDump: transformPiAi4xxDump, MARKER: PI_AI_4XX_DUMP_MARKER } 
 const { transformToolSchemaSanitize: transformPiAiToolSchemaSanitize, MARKER: PI_AI_TOOL_SCHEMA_SANITIZE_MARKER } = require('../patch-pi-ai-tool-schema-sanitize');
 const { transformDsToolSchemaSanitize, MARKER: DS_TOOL_SCHEMA_SANITIZE_MARKER } = require('../patch-ds-tool-schema-sanitize');
 
+// ---------------------------------------------------------------------------
+// 跨版本 session 日志未知事件类型兜底（0.6.3 第二案；用户降级/换装后老对话
+// 整个打不开的兜底）。上游 assertEventsSupported 对「未知且未标 ignorable」的
+// 事件 fail-closed：一条未来类型事件（如新版 harness 写入的 slice/digest）就让
+// 整个 observe 拒载（SessionFormatUnsupportedError → 历史加载失败）。历史会话
+// 以读为主，打不开比渲染有缺口更糟。修法：整方法替换为「收集未知事件 + 跳过 +
+// 固定前缀 [dsh-unknown-event-tolerance] 一次性告警（列类型@seq，诚实说明若含
+// 语义事件渲染可能有缺口）」；assertVersion 的格式版本拒绝仍 fail-closed（真正
+// 不兼容的日志照旧拒载）。跳过在每次读取时一致发生，重建语义自洽。
+// ---------------------------------------------------------------------------
+const SESSION_UNKNOWN_EVENT_TOLERANCE_MARKER = 'dsh-desktop fix: tolerate unknown session event types (load instead of refuse)';
+const SESSION_UNKNOWN_EVENT_FROM = 'assertEventsSupported(meta, events) {\n\t\tfor (const event of events) {\n\t\t\tif (KNOWN_SESSION_EVENT_TYPES.has(event.type) || event.ignorable === true) continue;\n\t\t\tthrow this.unsupported(meta, `session "${meta.id}" contains event type "${event.type}" (seq ${event.seq}) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness`);\n\t\t}'
+const SESSION_UNKNOWN_EVENT_TO = 'assertEventsSupported(meta, events) {\n\t\t// dsh-desktop fix: tolerate unknown session event types (load instead of refuse) —\n\t\t// a single future-typed event (e.g. "slice/digest" from a newer harness) used to\n\t\t// fail the whole observe, so the session was unopenable after a downgrade.\n\t\t// Skip + one-shot warn with a fixed prefix keeps gaps observable; the format\n\t\t// version refusal in assertVersion still fail-closes incompatible logs.\n\t\tconst dshUnknown = [];\n\t\tfor (const event of events) {\n\t\t\tif (KNOWN_SESSION_EVENT_TYPES.has(event.type) || event.ignorable === true) continue;\n\t\t\tdshUnknown.push(`${event.type}@${event.seq}`);\n\t\t}\n\t\tif (dshUnknown.length !== 0) console.warn(`[dsh-unknown-event-tolerance] session "${meta.id}": skipping ${dshUnknown.length} unknown event(s) (${dshUnknown.slice(0, 5).join(", ")}${dshUnknown.length > 5 ? " …" : ""}) instead of refusing to load — the session may render with gaps if a newer harness wrote semantic events.`);'
+
+function transformSessionUnknownEventTolerance(src, file) {
+  if (src.includes(SESSION_UNKNOWN_EVENT_TOLERANCE_MARKER)) return { status: 'already' };
+  if (!src.includes(SESSION_UNKNOWN_EVENT_FROM)) {
+    return { status: 'anchor-missing', detail: '未知事件兜底锚点未匹配（dsh 版本可能已变化），跳过 ' + file };
+  }
+  return { status: 'changed', src: src.replace(SESSION_UNKNOWN_EVENT_FROM, SESSION_UNKNOWN_EVENT_TO) };
+}
+
+// ---------------------------------------------------------------------------
+// 思考行折叠态空白修复（0.6.3 第一案；群友实机 + 临时探测服务 DOM 实证）。
+// 根因：dsh-client-ui-chat「思考」行折叠态 CSS（css 模板串）用了 contain:size
+// layout——size containment 让浏览器把元素宽度按「内容为空」计算；第三方主题
+// （如 maid-atelier）给助手消息内容区加 align-self:flex-start（宽度随内容收缩）
+// 后两者叠加，折叠行宽度被算成 0px，只剩一条 24px 高的空白；展开态该规则不
+// 适用故展开正常。修法：去掉清空宽度的 size containment、保留 layout，显式
+// height 继续锁折叠高度——无主题用户零可感知差异（DOM 实测折叠行宽 0px →
+// 614.8px、标题/摘要恢复可见）。锚点含 CSS modules 哈希类（.t2QtNG_root）：
+// 靶是 compat-pin 锁版 vendored 固定字节，哈希即稳定锚；全文件唯一出现（探针实测）。
+// ---------------------------------------------------------------------------
+const REASONING_ROW_COLLAPSE_MARKER = 'dsh-desktop fix: reasoning row collapse width (contain:size removed)';
+const REASONING_ROW_COLLAPSE_FROM = '.t2QtNG_root:not([data-expanded]){contain:size layout;height:calc(24px + var(--dsh-content-font-delta,0px))}';
+const REASONING_ROW_COLLAPSE_TO = '.t2QtNG_root:not([data-expanded]){contain:layout;/* dsh-desktop fix: reasoning row collapse width (contain:size removed) */height:calc(24px + var(--dsh-content-font-delta,0px))}';
+
+function transformReasoningRowCollapseWidth(src, file) {
+  if (src.includes(REASONING_ROW_COLLAPSE_MARKER)) return { status: 'already' };
+  if (!src.includes(REASONING_ROW_COLLAPSE_FROM)) {
+    return { status: 'anchor-missing', detail: '思考行折叠态锚点未匹配（dsh 版本可能已变化），跳过 ' + file };
+  }
+  return { status: 'changed', src: src.replace(REASONING_ROW_COLLAPSE_FROM, REASONING_ROW_COLLAPSE_TO) };
+}
+
 module.exports = {
   // runtime-patches 的 transform（re-export）。其中 transformPersistenceAll 不被
   // registry 直接引用，其消费方是 rootAppliers.patchSessionPersistence
@@ -2470,6 +2519,8 @@ module.exports = {
   transformJournalPrependContinuity,
   transformChatAutoLoadOlder,
   transformConversationAssemblyResilience,
+  transformReasoningRowCollapseWidth,
+  transformSessionUnknownEventTolerance,
   transformProfilePatchGuard,
   transformProfileBundleAppBoot,
   transformProfileBundleProfileBoot,
@@ -2539,6 +2590,8 @@ module.exports = {
     patchBundleArrivalRetry,
     patchSchedulerGuard,
     patchEmptyToolName,
+    patchToolNameMojibake,
+    patchSchemaBooleanRequired,
   },
   // 幂等 marker（单一数据源）：registry 与 transform 的 already 判定引用同一常量，
   // 杜绝「marker 跨模块复制漂移」。slot 系 marker 来自 runtime-patches（与 slot
@@ -2582,6 +2635,8 @@ module.exports = {
     JOURNAL_PREPEND_MARKER,
     CHAT_AUTOLOAD_MARKER,
     ASSEMBLY_RESILIENCE_MARKER,
+    REASONING_ROW_COLLAPSE_MARKER,
+    SESSION_UNKNOWN_EVENT_TOLERANCE_MARKER,
     ...require('./loader-isolation').markers,
   },
 };

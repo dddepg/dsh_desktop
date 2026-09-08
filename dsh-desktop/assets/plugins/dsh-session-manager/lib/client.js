@@ -59,8 +59,8 @@ window.__ModuleLoader__.load({
 			".dsm-empty{color:var(--dsw-alias-label-tertiary);font-size:12px;padding:12px 0}",
 			".dsm-btn{padding:5px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);cursor:pointer;font-size:12px;line-height:18px}",
 			".dsm-btn:hover{background:var(--dsw-alias-interactive-bg-hover)}",
-			".dsm-btn-danger{color:#c43f50;border-color:color-mix(in srgb,#c43f50 35%,transparent)}",
-			".dsm-btn-danger:hover{background:color-mix(in srgb,#c43f50 8%,transparent)}"
+			".dsm-btn-danger{color:var(--dsw-alias-state-error-primary,#c43f50);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#c43f50) 35%,transparent)}",
+			".dsm-btn-danger:hover{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#c43f50) 8%,transparent)}"
 		].join("");
 
 		function ensureCss() {

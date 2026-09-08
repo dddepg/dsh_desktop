@@ -322,7 +322,26 @@ function syncPlugins(home, dryRun, dshPkgDir) {
   // 客户端默认。插件级 disabled 条目一票否决任何已保存状态；需要时可在
   // 设置 → 插件 → 管理 一键开启。幂等：已存在 harness-pet 条目则不动。
   if (bundleNames.has('harness-pet')) {
-    const pet = ensureDisabledPatchEntry(patch, new RegExp('(?:^|\\n)\\s*-?\\s*id\\s*:\\s*harness-pet(?![A-Za-z0-9_.-])'), PET_DISABLE_BLOCK);
+    // #183：默认禁用只交付一次。用户在插件管理开启（移除禁用条目）后，
+    // 旧行为在每次 boot 同步都会把禁用块重新写回（idPattern 只判「条目不
+    // 存在」），用户的开启被永久打回关闭。判据升级为「历史快照（plugin-guard
+    // 每次 boot 录制 rollbacks/<profile>/cordis.patch.yml）或当前 patch 曾出现
+    // harness-pet 条目 → 默认禁用已交付，不再写回」；仅全新 profile（无快照、
+    // 无条目）写入一次默认禁用（保留 issue #34 的性能初衷）。
+    const petDelivered = (() => {
+      if (/id:\s*harness-pet(?![A-Za-z0-9_.-])/.test(patch)) return true;
+      try {
+        const rbDir = path.join(home, 'rollbacks', 'web');
+        if (fs.existsSync(rbDir)) {
+          for (const e of fs.readdirSync(rbDir)) {
+            const f = path.join(rbDir, e, 'cordis.patch.yml');
+            try { if (fs.existsSync(f) && /id:\s*harness-pet(?![A-Za-z0-9_.-])/.test(fs.readFileSync(f, 'utf8'))) return true; } catch { /* 单份快照不可读则跳过 */ }
+          }
+        }
+      } catch { /* 历史不可读时按未交付处理（保守，最多恢复旧行为） */ }
+      return false;
+    })();
+    const pet = petDelivered ? { patch, changed: false } : ensureDisabledPatchEntry(patch, new RegExp('(?:^|\\n)\\s*-?\\s*id\\s*:\\s*harness-pet(?![A-Za-z0-9_.-])'), PET_DISABLE_BLOCK);
     if (pet.changed) {
       patch = pet.patch;
       changed = true;

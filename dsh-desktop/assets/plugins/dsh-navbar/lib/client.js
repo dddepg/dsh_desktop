@@ -76,7 +76,7 @@ window.__ModuleLoader__.load({
 }
 [data-vlln-dot].active {
   width: 22px; border-radius: 999px;
-  background: var(--dsw-alias-text-accent, #4c9aff);
+  background: var(--dsw-alias-brand-primary, #4c9aff);
 }
 /* 悬停跟随：最近药丸加长（灰色，非品牌蓝），指示"整条可点"的点击落点。
  * transform:none 抵消 :hover 的 scale(1.25)——加长后宽度统一 22px。 */
@@ -85,14 +85,14 @@ window.__ModuleLoader__.load({
   background: rgba(128, 128, 140, .8);
 }
 /* 悬停中的激活药丸保持品牌蓝（active 优先）。 */
-[data-vlln-dot].active.hover { background: var(--dsw-alias-text-accent, #4c9aff); }
+[data-vlln-dot].active.hover { background: var(--dsw-alias-brand-primary, #4c9aff); }
 [data-vlln-preview] {
   /* 与官方 session 预览卡（HoverCard）同款：实色 #2C2C2E 双主题一致、
    * 244 宽、r12、lv3 阴影——同类型 hover 预览卡视觉统一，不用玻璃。 */
   position: fixed; z-index: 910; width: 244px; box-sizing: border-box;
   padding: 12px 16px; border-radius: 12px; font-size: 12px; line-height: 1.55;
-  color: var(--dsw-alias-text-1, #eee);
-  background: var(--dsw-hovercard-bg, #2C2C2E);
+  color: var(--dsw-alias-label-primary, #eee);
+  background: var(--dsw-alias-tooltip-bg, #2C2C2E);
   box-shadow: var(--dsw-shadow-lv3);
   overflow: hidden; white-space: pre-wrap; word-break: break-word;
   display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical;

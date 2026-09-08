@@ -124,6 +124,14 @@ pub const ENV_ALLOWLIST: &[&str] = &[
     // 内核侧诊断透传）。
     "DSH_TAURI_USERDATA",
     "DSH_TAURI_DIAG",
+    // 代理透传（0.6.3 内网修复）：企业/内网用户依赖用户级代理变量访问 API，
+    // env_clear 剥掉后内核 DNS 挂起/速败（2026-09-07 用户实测实锤）。
+    // eq_ignore_ascii_case 匹配已覆盖小写形态（http_proxy 等）。
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "NODE_USE_ENV_PROXY",
     // macOS/Linux 运行必需集（env_clear 后自足）。
     "TMPDIR",
     "USER",
@@ -183,6 +191,21 @@ impl SpawnSpec {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn env_allowlist_carries_proxy_variables() {
+        // 0.6.3 内网修复：代理变量必须在白名单（eq_ignore_ascii_case 大小写不敏感）。
+        for (k, v) in std::env::vars() {
+            let upper = k.to_ascii_uppercase();
+            if matches!(upper.as_str(), "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY" | "NODE_USE_ENV_PROXY") {
+                assert!(ENV_ALLOWLIST.iter().any(|a| a.eq_ignore_ascii_case(&k)), "代理变量 {k} 必须在白名单");
+            }
+        }
+        // 白名单至少声明四个代理族变量（源码形态锚定，防回退）。
+        for a in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY"] {
+            assert!(ENV_ALLOWLIST.contains(&a), "白名单缺 {a}");
+        }
+    }
 
     #[test]
     fn rc7_has_no_flag_rc8_has() {

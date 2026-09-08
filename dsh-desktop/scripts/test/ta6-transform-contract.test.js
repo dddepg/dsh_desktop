@@ -146,6 +146,6 @@ for (const spec of fileSpecs) {
 
 // 41 = 40（旧基线）+ conversation-assembly-resilience（BUG2 会话装配「可观测化 + 自愈」：
 // BoundConversation.accept 被静默吞的装配抛错 → 安全重建 + 去重告警）一条 file 补丁。
-test('契约面完整性：41 个 file transform 全部被本文件覆盖', () => {
-  assert.equal(fileSpecs.length, 41);
+test('契约面完整性：43 个 file transform 全部被本文件覆盖', () => {
+  assert.equal(fileSpecs.length, 43);
 });

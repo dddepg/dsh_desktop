@@ -975,7 +975,7 @@ window.__ModuleLoader__.load({
 			".dsh-pv-btn{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;width:24px;height:24px;border-radius:6px;padding:0;font-size:12px;line-height:1;flex:none}",
 			".dsh-pv-btn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
 			".dsh-pv-url{flex:1;min-width:0;height:26px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:12px;padding:0 8px;font-family:var(--ds-font-family-code,Consolas,monospace);outline:none;box-sizing:border-box}",
-			".dsh-pv-url:focus{border-color:var(--dsw-alias-interactive-focus,var(--dsw-alias-state-info-primary))}",
+			".dsh-pv-url:focus{border-color:var(--dsw-alias-brand-primary,var(--dsw-alias-state-business-primary))}",
 			".dsh-pv-chips{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none;max-height:60px;overflow-y:auto}",
 			".dsh-pv-chip{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border-radius:999px;font-size:10.5px;line-height:16px;padding:0 8px;cursor:pointer;font-variant-numeric:tabular-nums}",
 			".dsh-pv-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
@@ -1034,6 +1034,17 @@ window.__ModuleLoader__.load({
 				queryFileHighlight(sessionId, path) {
 					const { changes } = sessions.get(sessionId) || { changes: [] };
 					return queryFileHighlight(changes, path);
+				},
+				// 0.6.3：better-sidebar 编辑器「按变更查看 diff」的数据面——返回该文件全部
+				// 变更条目原文（seq 升序：op/oldText/newText/seq/time/path），不聚合不截断。
+				queryFileChanges(sessionId, path) {
+					const { changes } = sessions.get(sessionId) || { changes: [] };
+					const target = normPath(path);
+					const matches = [];
+					for (const c of changes) {
+						if (normPath(c.path) === target) matches.push({ path: c.path, op: c.op, oldText: c.oldText, newText: c.newText, seq: c.seq, time: c.time });
+					}
+					return matches;
 				}
 			};
 			window.__dshFileChanges = store;

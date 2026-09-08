@@ -129,6 +129,10 @@ function computeMatrix() {
 // lib/client.js，rc.2 含该包 accept 方法体匹配 → changed；rc.1 无该包 → target-absent → 57 项基线。
 // model-image-input 新增（模型卡「支持图片输入」勾选）→ kind:'root' 应用器不参与转换判定
 // （两形态恒 'root'）→ 58 项基线。
+// reasoning-row-collapse-width 新增（0.6.3 第一案：思考行折叠态空白）→ 靶 dsh-client-ui-chat，
+// rc.2 / rc.1 均不含该包 → 两形态 target-absent → 59 项基线。
+// session-unknown-event-tolerance 新增（0.6.3 第二案：未知 session 事件兜底）→ 靶
+// dsh-session-persistence，rc.2 / rc.1 均不含该包 → 两形态 target-absent → 60 项基线。
 // 内核升级后 diff 此矩阵即知锚点漂移面：修改本常量 = 显式接受新基线。
 // ===========================================================================
 const BASELINE = {
@@ -200,6 +204,12 @@ const BASELINE = {
     // conversation-assembly-resilience（BUG2）：靶 dsh-client-ui-conversation/lib/client.js，
     // rc.2 stage 树含该包且 accept(window) 方法体匹配 → changed。
     'conversation-assembly-resilience': 'changed',
+    // reasoning-row-collapse-width（0.6.3 第一案）：靶 dsh-client-ui-chat，rc.2 stage 树
+    // 不含该包 → target-absent。
+    'reasoning-row-collapse-width': 'target-absent',
+    // session-unknown-event-tolerance（0.6.3 第二案）：rc.2 / rc.1 均不含
+    // dsh-session-persistence → 两形态 target-absent。
+    'session-unknown-event-tolerance': 'target-absent',
   },
   'rc.1': {
     'slot-legacy-key': 'target-absent',
@@ -261,10 +271,16 @@ const BASELINE = {
     'chat-scroll-autoload-older': 'target-absent',
     // conversation-assembly-resilience（BUG2）：rc.1 旧线仅 dsh 主包，无 ui-conversation → target-absent。
     'conversation-assembly-resilience': 'target-absent',
+    // reasoning-row-collapse-width（0.6.3 第一案）：同 chat-scroll-autoload-older，
+    // rc.2 / rc.1 均不含 dsh-client-ui-chat → 两形态 target-absent。
+    'reasoning-row-collapse-width': 'target-absent',
+    // session-unknown-event-tolerance（0.6.3 第二案）：rc.2 / rc.1 均不含
+    // dsh-session-persistence → 两形态 target-absent。
+    'session-unknown-event-tolerance': 'target-absent',
   },
 };
 
-test('58 补丁 × rc.2 / rc.1 双形态判定矩阵与基线快照一致（锚点漂移哨兵）', { skip: !formRoot('rc.2') ? 'pristine rc.2 stage 树不可用（.tmp-rc2-stage 缺失）' : false }, () => {
+test('60 补丁 × rc.2 / rc.1 双形态判定矩阵与基线快照一致（锚点漂移哨兵）', { skip: !formRoot('rc.2') ? 'pristine rc.2 stage 树不可用（.tmp-rc2-stage 缺失）' : false }, () => {
   const matrix = computeMatrix();
   // 打印当前矩阵（基线对照 / 升级 diff 材料）。
   console.log('[TA6 基线矩阵]');
@@ -287,11 +303,11 @@ test('58 补丁 × rc.2 / rc.1 双形态判定矩阵与基线快照一致（锚�
     `判定矩阵漂移（内核形态变化或锚点漂移；确认后更新 BASELINE 快照以显式接受新基线）：\n  ${drift.join('\n  ')}`);
 });
 
-test('基线快照自身完整性：两形态 × 58 id 全覆盖', () => {
+test('基线快照自身完整性：两形态 × 60 id 全覆盖', () => {
   const ids = new Set(PATCH_SPECS.map((s) => s.id));
-  assert.equal(ids.size, 58);
+  assert.equal(ids.size, 60);
   for (const form of Object.keys(BASELINE)) {
-    assert.equal(Object.keys(BASELINE[form]).length, 58, `${form} 基线应覆盖 58 项`);
+    assert.equal(Object.keys(BASELINE[form]).length, 60, `${form} 基线应覆盖 59 项`);
     for (const id of Object.keys(BASELINE[form])) assert.ok(ids.has(id), `${form} 基线含未知 id ${id}`);
   }
 });

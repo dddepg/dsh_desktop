@@ -4213,7 +4213,8 @@ button.cardian-kt-chip:hover { background: var(--dsw-alias-interactive-bg-active
 		const inject = [
 			"slots",
 			"locale",
-			"remote"
+			"remote",
+			"sessions"
 		];
 		function apply(ctx) {
 			console.log("[cardian] 插件客户端已加载 (apply)，开始注册槽位");
@@ -4222,6 +4223,22 @@ button.cardian-kt-chip:hover { background: var(--dsw-alias-interactive-bg-active
 				en
 			}), "cardian: dictionaries");
 			const controller = new KnowledgeController(ctx);
+						// 会话联动（第八案重建：git checkout 曾抹除）——开新对话/切换会话时
+						// 自动收起知识树面板，新对话即刻可见；面板内主动操作不受影响。
+						// 订阅面与侧边栏插件同一官方 store（sessions.list 的 current 变化）。
+						ctx.effect(() => {
+							let last = ctx.sessions.list.getSnapshot().current;
+							return ctx.sessions.list.subscribe(() => {
+								const cur = ctx.sessions.list.getSnapshot().current;
+								if (cur !== last) {
+									last = cur;
+									if (controller.open) {
+										controller.open = false;
+										controller.emit();
+									}
+								}
+							});
+						}, "cardian: close on session switch");
 			ctx.effect(() => {
 				try {
 					return ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({

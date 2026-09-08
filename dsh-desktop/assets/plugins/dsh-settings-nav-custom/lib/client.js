@@ -198,16 +198,16 @@
       footer.textContent = FOOTER_TEXT;
       footer.style.cssText =
         'box-sizing:border-box;cursor:pointer;width:100%;height:36px;margin-top:6px;' +
-        'border:1px dashed var(--dsw-alias-border-secondary,#3a3f4b);' +
+        'border:1px dashed var(--dsw-alias-border-l2,#3a3f4b);' +
         'border-radius:12px;color:var(--dsw-alias-label-secondary,#9aa3b2);' +
         'background:transparent;font-family:inherit;font-size:12px;line-height:34px;' +
         'flex:none;text-align:center;';
       footer.addEventListener('mouseenter', function () {
-        footer.style.borderColor = 'var(--dsw-alias-border-interactive,#6aa8ff)';
-        footer.style.color = 'var(--dsw-alias-label-interactive,#6aa8ff)';
+        footer.style.borderColor = 'var(--dsw-alias-brand-primary,#6aa8ff)';
+        footer.style.color = 'var(--dsw-alias-brand-text,#6aa8ff)';
       });
       footer.addEventListener('mouseleave', function () {
-        footer.style.borderColor = 'var(--dsw-alias-border-secondary,#3a3f4b)';
+        footer.style.borderColor = 'var(--dsw-alias-border-l2,#3a3f4b)';
         footer.style.color = 'var(--dsw-alias-label-secondary,#9aa3b2)';
       });
       footer.addEventListener('click', function () {
@@ -228,7 +228,7 @@
     var box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = !cfg.hidden.has(section.id);
-    box.style.cssText = 'width:16px;height:16px;accent-color:var(--dsw-alias-interactive-bg,#6aa8ff);flex:none;';
+    box.style.cssText = 'width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary,#6aa8ff);flex:none;';
     var label = document.createElement('span');
     label.textContent = section.label || section.id;
     label.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
@@ -239,7 +239,7 @@
       b.textContent = txt;
       b.title = title;
       b.style.cssText = 'cursor:pointer;width:28px;height:28px;flex:none;border-radius:8px;' +
-        'border:1px solid var(--dsw-alias-border-secondary,#3a3f4b);' +
+        'border:1px solid var(--dsw-alias-border-l2,#3a3f4b);' +
         'background:transparent;color:var(--dsw-alias-label-secondary,#9aa3b2);font-size:12px;';
       return b;
     }
@@ -274,12 +274,12 @@
       'justify-content:center;background:rgba(0,0,0,.45);';
     var card = document.createElement('div');
     card.style.cssText = 'box-sizing:border-box;width:min(420px,calc(100vw - 48px));max-height:min(560px,calc(100vh - 96px));' +
-      'background:var(--dsw-alias-bg-layer-2,#16181d);border:1px solid var(--dsw-alias-border-strong,#2a2e38);' +
+      'background:var(--dsw-alias-bg-layer-2,#16181d);border:1px solid var(--dsw-alias-border-l1,#2a2e38);' +
       'border-radius:16px;box-shadow:var(--dsw-shadow-lv3,none);display:flex;flex-direction:column;' +
       'overflow:hidden;color:var(--dsw-alias-label-primary,#e6e9ef);font-family:inherit;';
     var head = document.createElement('div');
     head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;' +
-      'padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-weak,#23262e);flex:none;';
+      'padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#23262e);flex:none;';
     var title = document.createElement('span');
     title.textContent = EDITOR_TITLE;
     title.style.cssText = 'font-size:14px;font-weight:600;';
@@ -287,7 +287,7 @@
     reset.type = 'button';
     reset.textContent = '恢复默认';
     reset.style.cssText = 'cursor:pointer;border:none;background:transparent;' +
-      'color:var(--dsw-alias-label-interactive,#6aa8ff);font-size:12px;font-family:inherit;';
+      'color:var(--dsw-alias-brand-text,#6aa8ff);font-size:12px;font-family:inherit;';
     reset.addEventListener('click', function () {
       try { localStorage.removeItem(window.__dshSettingsNavCore.STORAGE_KEY); } catch (e) {}
       var fresh = window.__dshSettingsNavCore.parseConfig(null);
@@ -301,12 +301,12 @@
       '--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2,#2a2e38);';
     var foot = document.createElement('div');
     foot.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:10px 16px;' +
-      'border-top:1px solid var(--dsw-alias-border-weak,#23262e);flex:none;';
+      'border-top:1px solid var(--dsw-alias-border-l2,#23262e);flex:none;';
     var done = document.createElement('button');
     done.type = 'button';
     done.textContent = '完成';
     done.style.cssText = 'cursor:pointer;border:none;border-radius:10px;padding:6px 18px;' +
-      'background:var(--dsw-alias-interactive-bg,#6aa8ff);color:var(--dsw-alias-label-primary,#0b0d10);' +
+      'background:var(--dsw-alias-brand-primary,#6aa8ff);color:var(--dsw-alias-label-primary,#0b0d10);' +
       'font-size:13px;font-family:inherit;font-weight:500;';
     done.addEventListener('click', removeEditor);
     foot.appendChild(done);

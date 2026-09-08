@@ -75,13 +75,13 @@ async function buildTempRoots(t) {
   return { root, appDir, home, ctx, logs };
 }
 
-test('boot 链一条龙：applyAll(58) → composition-integrity → preflight → 二遍幂等', { skip: !hasPristine() && SKIP_NO_PRISTINE }, async (t) => {
+test('boot 链一条龙：applyAll(60) → composition-integrity → preflight → 二遍幂等', { skip: !hasPristine() && SKIP_NO_PRISTINE }, async (t) => {
   const { appDir, home, ctx } = await buildTempRoots(t);
 
-  // ---- 1. 一遍 applyAll：58 补丁全执行、有落盘、零 errors ----
+  // ---- 1. 一遍 applyAll：60 补丁全执行、有落盘、零 errors ----
   const r1 = applyAll(ctx);
-  assert.equal(r1.total, 58, `注册表应有 58 个补丁（实际 ${r1.total}）`);
-  assert.equal(PATCH_SPECS.length, 58, 'PATCH_SPECS 与编排 total 一致');
+  assert.equal(r1.total, 60, `注册表应有 58 个补丁（实际 ${r1.total}）`);
+  assert.equal(PATCH_SPECS.length, 60, 'PATCH_SPECS 与编排 total 一致');
   assert.ok(r1.changed > 0, `pristine 源一遍必须有写入（实际 changed=${r1.changed}）`);
   assert.deepEqual(r1.errors, [], `一遍不得有 errors：${JSON.stringify(r1.errors)}`);
   // degrade/fatal 档补丁的 anchor-missing 分流进 degraded（设计语义：降级告警
@@ -130,7 +130,7 @@ test('boot 链一条龙：applyAll(58) → composition-integrity → preflight �
   const r2 = applyAll(ctx);
   // total = 处理的 spec 数（含 target-absent，applyAll 内每 spec 无条件 +1），
   // 与一遍同源必相等，均等于 PATCH_SPECS.length；二遍只是 changed 归零。
-  assert.equal(r2.total, 58, `二遍 total 应与一遍一致（实际 ${r2.total}）`);
+  assert.equal(r2.total, 60, `二遍 total 应与一遍一致（实际 ${r2.total}）`);
   assert.deepEqual(r2.errors, [], `二遍不得有 errors：${JSON.stringify(r2.errors)}`);
   assert.equal(r2.changed, 0, `二遍应幂等（一遍 changed=${changedFirst}，二遍 changed=${r2.changed}）`);
 

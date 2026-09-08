@@ -58,6 +58,7 @@ const {
   SESSION_CTRL_INDEX_PKG_REL,
   GATEWAY_CLIENT_PKG_REL,
   UI_CHAT_CLIENT_PKG_REL,
+  SESSION_PERSISTENCE_CORE_PKG_REL,
   CONVERSATION_PKG_REL,
   API_SETTINGS_CONTROLLER_PKG_REL,
   WORKSPACE_PKG_REL,
@@ -96,6 +97,8 @@ const {
   transformHistoryPageSize,
   transformJournalPrependContinuity,
   transformChatAutoLoadOlder,
+  transformReasoningRowCollapseWidth,
+  transformSessionUnknownEventTolerance,
   transformConversationAssemblyResilience,
   transformProfilePatchGuard,
   transformProfileBundleAppBoot,
@@ -174,6 +177,8 @@ const {
   HISTORY_PAGE_MARKER,
   JOURNAL_PREPEND_MARKER,
   CHAT_AUTOLOAD_MARKER,
+  REASONING_ROW_COLLAPSE_MARKER,
+  SESSION_UNKNOWN_EVENT_TOLERANCE_MARKER,
   ASSEMBLY_RESILIENCE_MARKER,
 } = require('./patch-adapters').markers;
 
@@ -1688,6 +1693,64 @@ const PATCH_SPECS = [
       alreadyLog: alreadySkip,
       doneLog: (file) => '已将会话装配被吞的抛错改为安全重建 + 去重告警 ' + file,
       failLog: (file, err) => '会话装配自愈补丁失败(' + file + '): ' + err.message,
+    },
+  },
+  // -------------------------------------------------------------------------
+  // 思考行折叠态空白修复（0.6.3 第一案，群友 poison95 实机 + DOM 实测取证）。
+  // 靶 dsh-client-ui-chat/lib/client.js「思考」行折叠态 CSS 的 contain:size layout：
+  // size containment 让浏览器把元素宽度按「内容为空」计算，与第三方主题的
+  // align-self:flex-start 叠加后折叠行宽度恒 0px（24px 高空白条），展开态规则
+  // 不适用故正常。修法：去 size 留 layout，显式 height 继续锁折叠高度。锚点含
+  // CSS modules 哈希类（.t2QtNG_root）——compat-pin 锁版 vendored 字节内即稳定锚，
+  // 全文件唯一出现（探针实测）。与 chat-scroll-autoload-older 同靶同文件（不同
+  // 区段，互不重叠）。cli:false。
+  // -------------------------------------------------------------------------
+  {
+    id: 'reasoning-row-collapse-width',
+    group: 'runtime',
+    order: 400,
+    kind: 'file',
+    layout: 'runtime-local',
+    wslLayout: 'wsl',
+    pkgRel: UI_CHAT_CLIENT_PKG_REL,
+    transform: transformReasoningRowCollapseWidth,
+    marker: REASONING_ROW_COLLAPSE_MARKER,
+    requires: [],
+    failPolicy: 'warn',
+    cli: false,
+    logs: {
+      prefix: '思考行折叠空白修复',
+      alreadyLog: alreadySkip,
+      doneLog: (file) => '已去掉思考行折叠态 size containment（折叠空白修复） ' + file,
+      failLog: (file, err) => '思考行折叠空白修复失败(' + file + '): ' + err.message,
+    },
+  },
+  // -------------------------------------------------------------------------
+  // 跨版本 session 日志未知事件类型兜底（0.6.3 第二案）。
+  // 靶 dsh-session-persistence/lib/index.js assertEventsSupported：上游对未知且未标
+  // ignorable 的事件 fail-closed（一条新版 harness 写入的 slice/digest 就让整个
+  // observe 拒载），用户降级/换装后老对话全部打不开。修法：整方法替换为「收集 +
+  // 跳过 + [dsh-unknown-event-tolerance] 一次性告警」，格式版本拒绝（assertVersion）
+  // 仍 fail-closed。cli:false。
+  // -------------------------------------------------------------------------
+  {
+    id: 'session-unknown-event-tolerance',
+    group: 'runtime',
+    order: 401,
+    kind: 'file',
+    layout: 'runtime-local',
+    wslLayout: 'wsl',
+    pkgRel: SESSION_PERSISTENCE_CORE_PKG_REL,
+    transform: transformSessionUnknownEventTolerance,
+    marker: SESSION_UNKNOWN_EVENT_TOLERANCE_MARKER,
+    requires: [],
+    failPolicy: 'warn',
+    cli: false,
+    logs: {
+      prefix: '未知事件容忍补丁',
+      alreadyLog: alreadySkip,
+      doneLog: (file) => '已把未知 session 事件从拒载改为跳过+告警 ' + file,
+      failLog: (file, err) => '未知事件容忍补丁失败(' + file + '): ' + err.message,
     },
   },
 ];

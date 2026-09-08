@@ -25,6 +25,7 @@
 // balance 供 lib.rs（AppState 字段与轮询环接线）与 menu.rs（toggle 后触发）
 // 经路径直取，pub(crate)；其余子模块保持私有、只走下方 glob 门面。
 pub(crate) mod balance;
+pub mod dsh_cli;
 mod common;
 mod file;
 mod guard;

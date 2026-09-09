@@ -35,7 +35,9 @@
 > 若想强制指定 DSH 配置目录，启动前设置环境变量 `DSH_HOME` 即可（与 dsh CLI 行为一致）。
 
 > **macOS 用户**：当前构建未做 Apple 公证，首次打开若提示“已损坏，无法打开”，
-> 执行 `sudo xattr -cr "/Applications/DSH Desktop.app"` 即可；
+> 请先执行 `codesign --verify --deep --strict "/Applications/DSH Desktop.app"` 分型：
+> v0.5.0 属签名缺失型（`xattr` 无效，需 `codesign --force --deep --sign -` 重签），
+> 修复版本起属隔离属性型（`sudo xattr -cr` 即可）。
 > 详见 [docs/troubleshooting.md](docs/troubleshooting.md) 的 macOS 专章。
 
 ## 跟随官方更新（用户同意后自动更新）
@@ -99,14 +101,13 @@
 - **默认关闭**：避免向百炼等严格校验请求体的第三方 API 注入 `reasoning_effort` 导致接口报错。
 - 仅当 provider 支持时才开启；字段名可改为 provider 要求的名称，留空表示只显示档位、不注入参数。
 
-## 插件市场（Zat-DSH Engine）
+## 插件市场（dsh-community-market）
 
-- **v0.3.6 起**：设置 → 插件 →「插件市场」由 **[Zat-DSH Engine](https://github.com/mishibeikejie/zat-dsh-engine)**（MIT License）完全提供，替换旧版内置市场。
-- **社区全量目录**：实时搜索 GitHub `dsh-plugin` 主题下的 1700+ 社区插件，12 个分类，中英双语介绍（内置 999 条中文简介，新插件由当前模型即时翻译）。
-- **一键安装 / 更新 / 卸载 / 启停**：基于官方 `dsh plugin` profile 机制（底层 pnpm），多插件仓库支持图形化选择；安装前冲突检测 + 健康报告 + 失败自动回滚 + 最近已知可用备份。
-- **网络自适应**：系统代理 → 直连 → `gh-proxy.com` 镜像 → 内置 fetch 兜底，无需 VPN。
-- **自带自更新**：市场自身发现新版本时在标题旁显示更新按钮。
-- 该插件随桌面端打包在 `assets/plugins/zat-dsh-engine`（含 LICENSE 与双语 README），启动时自动同步为 web profile bundle。
+- **市场整体切换**：设置 → 插件 → 市场页由 **[dsh-community-market](https://github.com/anywhere-labs/deepseek-harness-desktop/tree/master/dsh-community-market)**（anywhere-labs/deepseek-harness-desktop，MIT License）提供——开放目录源架构：内置 **DSH 1024Store** 与 **dshfind** 两个合作目录适配器 + 标准 HTTP 目录源，任何人都可以按公开 Schema（`docs/schemas/`）提供、接入和使用插件目录源；目录收录不代表审核或推荐。
+- **搜索与安装**：分类/关键词搜索，一键安装走 npm registry 精确版本 + 完整性校验（tarball SHA 校验、禁装产品包/生命周期脚本防护），安装失败自动回滚；启停 / 卸载与安装回执管理。
+- **桌面服务桥**：随包内置 `dsh-market-desktop-bridge` 配套插件，为市场提供 `desktopProfiles` / `desktopPnpm` / `desktopPlugins` / `desktopActions` 四个 host 服务——包操作转 `dsh plugin` CLI 重入（含 pnpm 兼容恢复），启停读写 `cordis.patch.yml`（与壳层插件管理页双向兼容），重启经壳层监管通道（`window.dshDesktop.restartService`）原地拉起。
+- 市场与桥以 bundle 形式随桌面端分发（`assets/plugins/dsh-community-market` + `assets/plugins/dsh-market-desktop-bridge`），启动时自动同步进 web profile；历史内置市场（zat-dsh-engine → dshmarket）的存量装配由同步链一次性退役清理。
+- 上游市场的目录源契约与适配器开发文档见包内 `docs/`（catalog-provider-contract / catalog-adapter-guide / install-and-uninstall）。
 
 ## 侧边栏工作台（dsh-better-sidebar）
 
@@ -221,13 +222,27 @@
 要求：Windows + Node.js（仅构建机需要）+ npm。
 
 ```powershell
-npm install                    # 安装 dsh / electron / electron-builder
+npm install                    # 安装内核 @deepseek-ai/* 依赖（postinstall 自动跑 patch-deps 打构建期补丁）
 npm run fetch-runtime          # 内置 node.exe + npm CLI（构建与开发都需要）
-npm start                      # 开发模式启动（窗口内跑 Web UI）
-npm run dist                   # 构建 portable + NSIS 安装包，输出到 dist/
+npm test                       # 全量测试（node --test 自动发现 scripts/test/*.test.js）
 ```
 
-> 网络受限时：Electron 二进制镜像 `$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'`（可 `npm run electron:fetch` 手动补拉）；打包工具链镜像 `$env:ELECTRON_BUILDER_BINARIES_MIRROR='https://npmmirror.com/mirrors/electron-builder-binaries/'`。
+> 开发运行与打包都在**桌面壳侧**（`dsh-tauri/`）：本包 `package.json` 没有 `start` / `dist` 脚本
+> （原 Electron 壳已下线，照旧命令跑会直接报 `Missing script`）。
+> 现行入口（与 `dsh-tauri/docs/development.md` §6 一致；每步 cwd 不同，不要连着粘贴执行）：
+>
+> ```powershell
+> cd ..\dsh-tauri\src-tauri\src\app ; cargo run                        # 开发运行
+> cd <仓库根> ; bash dsh-tauri/scripts/stage-payload.sh                 # ① 内核 payload 暂存
+> cd dsh-tauri ; npx --yes @tauri-apps/cli build `
+>   --config src-tauri/src/app/tauri.conf.json --target x86_64-pc-windows-msvc  # ② NSIS
+> ```
+>
+> 完整流程见 `dsh-tauri/README.md` 与 `dsh-tauri/docs/development.md`。
+
+> 网络受限时：依赖拉取走 `.npmrc` 的 registry 镜像（`scripts/fetch-*.js` 会遵循它）；
+> 原先的 `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR` 与 `npm run electron:fetch` 均已失效，
+> 随 Electron 壳一起下线，不再需要。
 >
 > 开发辅助脚本：`node scripts/check-latest.js`（检查/试装更新）、`node scripts/test-watcher.js`（通知检测单测）、`node scripts/inspect-session.js <file>`（会话日志事件词表）。
 
@@ -235,10 +250,10 @@ npm run dist                   # 构建 portable + NSIS 安装包，输出到 di
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Electron 壳 (main.js)                                   │
+│  Tauri 壳（Rust，dsh-tauri/src-tauri/src/app）             │
 │  · 单实例锁 / 窗口 / 菜单 / 生命周期                       │
 │  · 会话完成监听 (session-watcher.js) → 系统通知            │
-│  · 官方更新 (updater.js) → 用户同意后安装 overlay          │
+│  · 官方更新 (commands/updater_client.rs) → 用户同意后装 overlay │
 │  · spawn vendor|resources 里的 node.exe                   │
 └──────────────┬───────────────────────────────────────────┘
                │  dsh web --host 127.0.0.1 --port <上次保存的端口>
@@ -291,7 +306,7 @@ node dsh-desktop/scripts/sync-companion-plugins.js ~/.dsh --with-patches
 - **自动更新**：检查仍在 Windows 侧（npm registry 查询），安装走 WSL 内 npm（staging + 原子切换，失败自动保留旧版），重启应用生效；启动失败弹窗可「回退到上一版本」。
 - 退出/重启服务：按 `dsh.pid` 发 SIGTERM 优雅收尾（绝不 `wsl --terminate`）；插件市场的「重启服务」在托管模式下可用（重启 WSL 内的 dsh web）。
 - 会话通知、余额小部件、文件 diff 查看照常（经 UNC 直读 WSL 文件）；「文件」视图的还原/打开仍是 Windows 本地功能，不适用于 WSL 会话。
-- 已知边界：Windows 侧访问依赖 WSL2 的 localhost 转发（不通时启用 `.wslconfig` 的 `networkingMode=mirrored`）；`wslInstallDir` 路径不能含空格。
+- 已知边界：Windows 侧访问依赖 WSL2 的 localhost 转发——**推荐**在 `.wslconfig` 设 `[wsl2] networkingMode=mirrored`（Win11 22H2+）走 localhost 直连，根治 NAT 转发的偶发断线/输出中断；未 mirrored 时壳也不再因转发抖动误杀 WSL 内还活着的内核（断线后前端重连同一内核续上，详见 docs/wsl-verification.md 常见问题）；`wslInstallDir` 路径不能含空格。
 
 ## 日志与排障
 
@@ -338,8 +353,8 @@ dsh-desktop/
 │   ├── build-icon.ps1    # 生成应用图标（透明圆角蒙版）+ 托盘图标
 │   ├── check-latest.js   # agent 更新链路测试工具
 │   ├── check-client-latest.js # 客户端更新链路测试工具
-│   ├── patch-event-vocabulary.js # dsh-session 事件词汇表补丁（afterPack 自动调用）
-│   ├── install-minimal-win-preset.js # 内置 8 个 Agent 预设安装（npm start / afterPack / WSL 同步调用）
+│   ├── patch-event-vocabulary.js # dsh-session 事件词汇表补丁（当前无调用方，接线随 Electron 壳下线 — 见脚本头 Status）
+│   ├── install-minimal-win-preset.js # 内置 8 个 Agent 预设安装（sidecar cli.js / preset-heal / WSL 同步调用）
 │   ├── test-watcher.js   # 通知检测单测
 │   ├── sync-companion-plugins.js # 把配套插件与内置 Agent 预设同步进任意 dsh（独立于壳）
 │   └── inspect-session.js# 会话日志解析工具

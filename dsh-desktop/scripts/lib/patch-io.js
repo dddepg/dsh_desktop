@@ -1,42 +1,15 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// 统一补丁 I/O 原语（唯一实现）。
+// 统一补丁 I/O 原语。
 //
-// main.js 的运行时补丁（12 个 apply*）、scripts/ 下的补丁脚本与
-// profile-bundle-heal.js 曾各自实现「原子写」与「进程级读缓存」，且
-// 原子写（writePatchAtomic / writeFileAtomic）与非原子 fs.writeFileSync
-// 混用、读缓存只覆盖部分调用方。本模块把这些机械性样板收口为一处，
-// 所有调用方共用，杜绝再次漂移。
-//
-// 约定：
-//   - writeFileAtomic：临时文件 + rename。临时文件与目标同目录，保证 rename
-//     同卷；替换整文件，避免与 dsh 的 HMR 观察者撕裂读。临时名含 pid +
-//     时间戳 + 进程内序号：主进程运行时补丁与 CLI 补丁脚本可能并发打同一
-//     文件，固定 .tmp 名会让两个调用方互相覆盖/rename 对方尚未写满的
-//     临时文件（历史竞态）。
-//   - readFileCached：按 realpath 归一化 + size/mtime 签名做进程级读缓存；
-//     任何写入都会更新 mtime，缓存自动失效，不存在陈旧内容（语义与旧 main.js
-//     内联实现完全一致，包括多路径指向同一物理文件时的去重读）。读前读后
-//     各 stat 一次：读取期间文件被改写则不写缓存（TOCTOU 防护），下一次
-//     调用自然重读。
+// 原子写已收口到 scripts/plugin-core/lib/fs-atomic.js（全仓唯一实现，
+// 含 EPERM 重试与 rename 覆盖兜底）；本模块保留历史导入路径与进程级读缓存
+// readFileCached（main.js 运行时补丁 / CLI 补丁脚本共用）。
 // ---------------------------------------------------------------------------
 
 const fs = require('node:fs');
-
-let atomicTmpSeq = 0;
-
-/** 原子写（唯一临时名 + rename），避免与 dsh 的观察者撕裂读。 */
-function writeFileAtomic(file, content) {
-  const tmp = `${file}.${process.pid}.${Date.now()}.${++atomicTmpSeq}.tmp`;
-  try {
-    fs.writeFileSync(tmp, content, 'utf8');
-    fs.renameSync(tmp, file);
-  } catch (err) {
-    try { fs.rmSync(tmp, { force: true }); } catch {}
-    throw err;
-  }
-}
+const { writeFileAtomic, isTransientFsError } = require('../plugin-core/lib/fs-atomic');
 
 // realpath -> { size, mtimeMs, text }
 const fileReadMemo = new Map();
@@ -61,14 +34,13 @@ function fileRealKey(file) {
  */
 function readFileCached(file) {
   try {
-    const st = fs.statSync(file);
+    const st = statRetry(file);
     const key = fileRealKey(file);
     const hit = fileReadMemo.get(key);
     if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.text;
-    const text = fs.readFileSync(file, 'utf8');
-    // TOCTOU 防护：读取期间文件被改写（size/mtime 变化）则不缓存，
-    // 避免把「读到的旧内容」记在「新签名」下造成陈旧命中。
-    const st2 = fs.statSync(file);
+    const text = readFileRetry(file, 'utf8');
+    // TOCTOU 防护：读取期间文件被改写（size/mtime 变化）则不缓存。
+    const st2 = statRetry(file);
     if (st2.size === st.size && st2.mtimeMs === st.mtimeMs) {
       fileReadMemo.set(key, { size: st2.size, mtimeMs: st2.mtimeMs, text });
     }
@@ -78,4 +50,82 @@ function readFileCached(file) {
   }
 }
 
-module.exports = { writeFileAtomic, readFileCached };
+// ---------------------------------------------------------------------------
+// Windows 瞬时 EBUSY/EPERM/EACCES 有限重试（#154 第二根因）：杀软/索引器
+// 扫描锁住文件时，fs.readFileSync / fs.statSync 会抛 EBUSY/EPERM/EACCES。
+// 历史行为是一次失败即按「读取失败」跳过（patch-engine 跳过该文件）或
+// 让调用方把瞬时锁当成真故障（boot 链 readFileCached 直接判 null）。有限
+// 重试（3 次 × 递增退避 120/240ms，总 < 0.5s，远低于任何 60s 超时）把
+// 「AV 锁瞬时报错」从失败面上拿掉；重试耗尽才抛（错误带可读包装，指出
+// 文件与已重试次数）。
+// ---------------------------------------------------------------------------
+
+/** 是否为可重试的 Windows 瞬时锁错误码。
+ *  复用 plugin-core/lib/fs-atomic.js 的唯一实现（V17 LOW：消除两份同名复制）。 */
+// isTransientFsError 由 fs-atomic.js 导入并在 module.exports 一并 re-export。
+
+/** 重试耗尽后的可读错误包装（#154：失败时给可读错误而非裸 EBUSY）。 */
+function readableFsError(err, file, op, attempts) {
+  const e = new Error(`${op} 失败（${file}）：${(err && err.message) || err}。文件可能被杀毒软件/索引服务暂时锁定，已重试 ${attempts} 次仍失败。可稍后重试或关闭实时防护后重试。`);
+  e.code = (err && err.code) || 'EIO';
+  e.cause = err;
+  return e;
+}
+
+/**
+ * readFileSync 的瞬时锁重试版本：EBUSY/EPERM/EACCES 重试 3 次
+ * （120/240ms 递增退避），耗尽后抛可读错误。其余错误码（ENOENT 等）
+ * 不重试直接抛（保持调用方语义）。
+ * @param {string} file
+ * @param {string} [encoding]
+ * @param {{attempts?:number, baseDelayMs?:number}} [opts]
+ * @returns {string|Buffer}
+ */
+function readFileRetry(file, encoding, opts = {}) {
+  const attempts = Number.isInteger(opts.attempts) && opts.attempts >= 1 ? opts.attempts : 3;
+  const base = Number.isFinite(opts.baseDelayMs) && opts.baseDelayMs >= 0 ? opts.baseDelayMs : 120;
+  for (let i = 0; ; i += 1) {
+    try {
+      return fs.readFileSync(file, encoding);
+    } catch (err) {
+      if (!isTransientFsError(err) || i >= attempts - 1) {
+        if (isTransientFsError(err) && i >= attempts - 1) {
+          throw readableFsError(err, file, '读取文件', attempts);
+        }
+        throw err;
+      }
+      sleepSync(base * (i + 1));
+    }
+  }
+}
+
+/**
+ * statSync 的瞬时锁重试版本（readFileCached 与调用方共用）。
+ * @param {string} file
+ * @param {object} [opts]
+ * @returns {fs.Stats}
+ */
+function statRetry(file, opts = {}) {
+  const attempts = Number.isInteger(opts.attempts) && opts.attempts >= 1 ? opts.attempts : 3;
+  const base = Number.isFinite(opts.baseDelayMs) && opts.baseDelayMs >= 0 ? opts.baseDelayMs : 120;
+  for (let i = 0; ; i += 1) {
+    try {
+      return fs.statSync(file);
+    } catch (err) {
+      if (!isTransientFsError(err) || i >= attempts - 1) {
+        if (isTransientFsError(err) && i >= attempts - 1) {
+          throw readableFsError(err, file, '读取文件状态', attempts);
+        }
+        throw err;
+      }
+      sleepSync(base * (i + 1));
+    }
+  }
+}
+
+function sleepSync(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { /* 同步退避 */ }
+}
+
+module.exports = { writeFileAtomic, readFileCached, readFileRetry, statRetry, isTransientFsError, readableFsError };

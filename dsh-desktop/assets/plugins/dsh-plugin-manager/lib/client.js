@@ -114,8 +114,77 @@ window.__ModuleLoader__.load({
 			diagOrderApplying: "应用中…",
 			diagOrderApplied: "已应用建议顺序，重启后生效",
 			diagOrderCycle: "规则/依赖存在循环，无法自动排序：",
-			diagOrderRestart: "顺序变更需完全退出并重启后生效。"
+			diagOrderRestart: "顺序变更需完全退出并重启后生效。",
+			// 后端服务健康（组合完整性运行期探测）
+			healthTitle: "后端服务健康",
+			healthHint: "实时读取内核 Loader 条目（pluginInventory），检测凭据 / 会话 / 模型 / 网关等关键后端服务的挂载状态。缺席通常意味着启动时被静默隔离，会以「保存 key 报错」「会话不保存」等形式延迟暴露——这里让它提前可见。",
+			healthRun: "重新检测",
+			healthRunning: "检测中…",
+			healthOk: "关键后端服务全部在位 ✓",
+			healthMissing: "缺席",
+			healthFailed: "挂载失败",
+			healthDisabled: "已被禁用",
+			healthFix: "修复指引：完全退出并重启 DSH Desktop（启动链会自动修复 / 重装缺失组件）。若重启后仍缺席，请在下方「导出诊断日志包」并随反馈附上。",
+			healthError: "检测失败：",
+			healthNoChannel: "内核插件清单通道不可用（请确认已更新到最新版 DSH Desktop）",
+			// 已移除服务提示（issue #176：插件 inject 了运行态不存在的服务 → 永久 pending）
+			removedTitle: "已移除的内核服务（插件适配指引）",
+			removedHint: "部分老插件的 inject 仍依赖已被新内核移除的服务；这类插件会一直停留在「等待生效(pending)」且不报错。若某插件长期 pending 且依赖下列服务，即为根因。",
+			removedSvcPrefix: "依赖已移除服务",
+			removedUseInstead: "请作者改用",
+			removedPendingNone: "当前没有长期停留在 pending 的插件。",
+			removedPendingCount: "检测到 {0} 个插件停留在「等待生效(pending)」：",
+			// 无效条目体检（cordis.patch.yml 死条目横幅 + 一键清理；桥缺方法时整块静默隐藏）
+			deadScanTitle: "检测到 {0} 条无效插件条目（包不存在）：",
+			deadStaleTitle: "另有 {0} 条疑似陈旧的禁用记录（只提示，不参与清理）：",
+			deadCleanBtn: "清理",
+			deadCleaning: "清理中…",
+			deadCleanDone: "已清理，完全退出重启 DSH Desktop 后生效"
 		};
+
+		// 关键后端服务清单（运行期形态）：id = 组合 yml 的行 id（loader entryId），
+		// module = 行声明的包名（entryId 带嵌套前缀时的兜底匹配键）。
+		// 与 scripts/integration/composition-integrity.js 的 criticalServices() 保持
+		// 同一职责口径（缺席后果文案一致）；此处仅保留有独立 loader 条目的行
+		// （dsh-base / dsh-web-app 两个受保护 bundle 容器在运行期没有条目）。
+		const CRITICAL_RUNTIME = [
+			{ id: "credentials", module: "@deepseek-ai/dsh-credentials-local", label: "凭据服务", consequence: "保存 / 读取 API key 失败（保存 key 时报 \"credentials service is absent\"）" },
+			{ id: "settings", module: "@deepseek-ai/dsh-settings-file", label: "设置文档", consequence: "设置读写失效：模型页 / 偏好保存后不生效或报错" },
+			{ id: "llm", module: "@deepseek-ai/dsh-llm", label: "模型调用核心", consequence: "所有模型请求无法发起，对话不可用" },
+			{ id: "llm-deepseek", module: "@deepseek-ai/dsh-llm-deepseek", label: "DeepSeek 模型路由", consequence: "官方 DeepSeek 模型全部不可用" },
+			{ id: "session", module: "@deepseek-ai/dsh-session", label: "会话域", consequence: "会话创建 / 派发失效，无法开始任何对话" },
+			{ id: "session-persistence-jsonl", module: "@deepseek-ai/dsh-session-persistence-jsonl", label: "会话落盘", consequence: "会话不持久化：重启后全部历史丢失" },
+			{ id: "sandbox", module: "@deepseek-ai/dsh-sandbox-local", label: "文件边界", consequence: "沙箱判定失效，文件操作权限边界不可用" },
+			{ id: "approval", module: "@deepseek-ai/dsh-user-approval", label: "权限审批", consequence: "工具调用的用户审批（允许 / 拒绝）流程失效" },
+			{ id: "storage-json", module: "@deepseek-ai/dsh-storage-json", label: "本地存储", consequence: "本地键值存储失效，依赖 storage 域的功能不保存" },
+			{ id: "webserver", module: "@deepseek-ai/dsh-host-webserver", label: "本地服务端口", consequence: "页面端口不监听：白屏 / 一直加载" },
+			// issue #175：网关行的旧键（api-gateway / @deepseek-ai/dsh-host-apiproxy）是
+			// 重构前命名——被移除的是宿主服务 apiProxy（见下方 REMOVED_CAPABILITIES），
+			// 网关这一 loader 行本身仍在组合里，只是改名/改包：
+			//   node_modules/@deepseek-ai/dsh-base/cordis.patch.yml:45-46
+			//     - id: typert-gateway / name: '@deepseek-ai/dsh-api-gateway'
+			// 用旧键查 live 注册表永远缺席 → 永久误报红条；删掉该行又会丢掉对网关的
+			// 真实监控（真挂了就报绿）。故按实际挂载键修正，与 composition-integrity.js
+			// CRITICAL_SERVICES 的 typert-gateway 行（同 label / consequence 口径）对齐。
+			{ id: "typert-gateway", module: "@deepseek-ai/dsh-api-gateway", label: "API 网关", consequence: "前后端 RPC 全部哑火，页面所有操作报错" },
+			{ id: "plugin-inventory", module: "@deepseek-ai/dsh-host-plugin-inventory", label: "插件清单服务", consequence: "插件清单 / 健康页无数据" },
+			{ id: "modules", module: "@deepseek-ai/dsh-client-modules", label: "前端模块表", consequence: "浏览器模块表（window.__DSH_BOOT__）缺失，页面空白" },
+			{ id: "connection", module: "@deepseek-ai/dsh-client-connection", label: "前后端传输", consequence: "fetch / SSE 传输断开，页面无法与后端通信" },
+			{ id: "web-runtime", module: "@deepseek-ai/dsh-web-app", label: "Web 运行时", consequence: "Web 运行时未挂载，页面无法完成启动" }
+		];
+
+		// 已从内核移除的服务登记表（与 scripts/integration/service-absence.js 的
+		// REMOVED_SERVICES 保持同源口径；此处只用于 UI 展示适配指引，不参与关键判定）。
+		// issue #176：插件若 inject 下列服务，会永远 pending 且无报错。
+		const REMOVED_CAPABILITIES = [
+			{
+				service: "apiProxy",
+				label: "API Proxy 服务",
+				removedIn: "0.1.2-alpha.5",
+				useInstead: ["typertGateway", "webServer"],
+				note: "新内核已将 API Proxy 的一元操作下沉到各自的 Remote 归属服务（会话 / 设置 / 凭据 / 模型 / 命令 / 工作区等），统一经 typertGateway 传输；不再有名为 apiProxy 的宿主服务。",
+			},
+		];
 
 		function bridge() {
 			const b = window.dshDesktop;
@@ -214,10 +283,13 @@ window.__ModuleLoader__.load({
 			const [updatingId, setUpdatingId] = react.useState(null);
 			// 简洁卡片展开详情（点击卡片切换；null = 全部收起）
 			const [expanded, setExpanded] = react.useState(null);
-			// 卸载两步确认（id → true 表示已点过一次，等待再点确认）
-			const [uninstallArmed, setUninstallArmed] = react.useState(null);
-			// 操作结果提示条（成功/失败均走这里，避免借用 error 区）
-			const [actionMsg, setActionMsg] = react.useState(null);
+				// 卸载两步确认（id → true 表示已点过一次，等待再点确认）
+				const [uninstallArmed, setUninstallArmed] = react.useState(null);
+				// 无效条目体检（cordis.patch.yml 死条目）：null=未扫描/无死条目
+				const [deadScan, setDeadScan] = react.useState(null);
+				const [cleaningDead, setCleaningDead] = react.useState(false);
+				// 操作结果提示条（成功/失败均走这里，避免借用 error 区）
+				const [actionMsg, setActionMsg] = react.useState(null);
 
 			react.useEffect(() => {
 				let cancelled = false;
@@ -298,6 +370,14 @@ window.__ModuleLoader__.load({
 					if (!cancelled) {
 						setRows(mapped);
 						setLocalOnly(!liveOk && mapped.length > 0);
+					}
+					// 3) 无效条目体检（可选链：桥/壳缺方法即 undefined；失败与取消
+					//    一律静默降级——横幅是增强面，绝不阻塞插件清单）。
+					try {
+						const scan = await (b && b.listDeadEntries?.());
+						if (!cancelled && scan && scan.ok) setDeadScan(scan);
+					} catch (err) {
+						console.warn("[dsh-plugin-manager] 无效条目体检失败（降级隐藏）:", err);
 					}
 				})();
 				return () => { cancelled = true; };
@@ -420,6 +500,28 @@ window.__ModuleLoader__.load({
 				}).catch((err) => setActionMsg(L.actionFailed + String((err && err.message) || err)));
 			};
 
+			/** 一键清理死条目（备份 + 原子写在壳侧完成，壳侧只清理仍判死的 id；
+			 *  成功后刷新清单并重扫横幅，提示重启生效）。 */
+			const doCleanDead = () => {
+				const b = bridge();
+				const ids = deadScan && Array.isArray(deadScan.dead) ? deadScan.dead.map((d) => d.id) : [];
+				if (!b || !b.removeDeadEntries || cleaningDead || ids.length === 0) return;
+				setCleaningDead(true);
+				b.removeDeadEntries(ids).then((res) => {
+					setCleaningDead(false);
+					if (res && res.ok) {
+						setDeadScan(null);
+						setActionMsg(L.deadCleanDone);
+						setRefreshTick((t) => t + 1);
+					} else {
+						setActionMsg(L.actionFailed + String((res && res.error) || "未知错误"));
+					}
+				}).catch((err) => {
+					setCleaningDead(false);
+					setActionMsg(L.actionFailed + String((err && err.message) || err));
+				});
+			};
+
 			const matches = (row) => {
 				if (!query) return true;
 				const q = query.toLowerCase();
@@ -428,7 +530,7 @@ window.__ModuleLoader__.load({
 
 			const phaseBadge = (row) => {
 				if (row.phase === "failed") return badge(L.badgeFailed, "var(--dsw-alias-state-error-primary, #ff7a85)");
-				if (row.phase === "loading" || row.phase === "pending") return badge(L.badgePendingLoad, "var(--dsw-alias-state-info-primary, #5b9bd5)");
+				if (row.phase === "loading" || row.phase === "pending") return badge(L.badgePendingLoad, "var(--dsw-alias-state-business-primary, #5b9bd5)");
 				return null;
 			};
 
@@ -480,26 +582,26 @@ window.__ModuleLoader__.load({
 								}),
 								jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, flex: "none" }, children: [
 									upd && upd.hasUpdate && !upd.applied && !removed
-										? badge("↑ " + upd.latest, "var(--dsw-alias-state-info-primary, #5b9bd5)")
+										? badge("↑ " + upd.latest, "var(--dsw-alias-state-business-primary, #5b9bd5)")
 										: null,
-									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-info-primary, #5b9bd5)") : null,
+									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-business-primary, #5b9bd5)") : null,
 									jsx("span", { style: { width: 7, height: 7, borderRadius: 999, background: dotColor, flex: "none" } }),
 									switchControl(row, on, onToggle, pendingId === row.id)
 								] })
 							]
 						}),
 						isOpen ? jsxs("div", {
-							style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--dsw-alias-divider-weak, rgba(128,128,128,0.14))", display: "flex", flexDirection: "column", gap: 8 },
+							style: { marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.14))", display: "flex", flexDirection: "column", gap: 8 },
 							children: [
 								jsx("span", { style: { fontSize: 12, opacity: 0.7, lineHeight: 1.5 }, children: row.description || L.descFallback }),
 								jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, children: [
-									on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warning-primary, #d99a3d)"),
+									on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warn-primary, #d99a3d)"),
 									failed ? badge(L.badgeFailed, "var(--dsw-alias-state-error-primary, #ff7a85)") : null,
 									upd && !upd.error ? (upd.hasUpdate && !upd.applied
-										? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-info-primary, #5b9bd5)")
+										? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-business-primary, #5b9bd5)")
 										: (!upd.applied ? badge(L.upToDate + (upd.current ? " v" + upd.current : ""), "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))") : null))
 										: null,
-									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-info-primary, #5b9bd5)") : null
+									rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-business-primary, #5b9bd5)") : null
 								] }),
 								jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6 }, children: [
 									row.group !== "core" && !row.hasConfig && !removed ? jsx("button", {
@@ -508,7 +610,7 @@ window.__ModuleLoader__.load({
 										style: linkBtnStyle(uninstallArmed === row.id, false),
 										children: uninstallArmed === row.id ? L.uninstallConfirm : L.uninstallBtn
 									}) : null,
-									removed ? jsx("button", {
+									removed && row.restorable !== false ? jsx("button", {
 										type: "button",
 										onClick: (e) => { e.stopPropagation(); doRestore(row); },
 										style: linkBtnStyle(false, true),
@@ -536,7 +638,7 @@ window.__ModuleLoader__.load({
 				cursor: "pointer",
 				whiteSpace: "nowrap",
 				border: "1px solid " + (danger ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"),
-				color: danger ? "var(--dsw-alias-state-error-primary, #ff7a85)" : (accent ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit"),
+				color: danger ? "var(--dsw-alias-state-error-primary, #ff7a85)" : (accent ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit"),
 				background: "transparent"
 			});
 
@@ -548,21 +650,21 @@ window.__ModuleLoader__.load({
 				const upd = updateMap && updateMap[row.id];
 				return jsxs("div", {
 					key: row.id,
-					style: { display: "flex", flexDirection: "column", gap: 5, padding: "10px 0", borderBottom: "1px solid var(--dsw-alias-divider-weak, rgba(128,128,128,0.16))", opacity: removed ? 0.62 : 1 },
+					style: { display: "flex", flexDirection: "column", gap: 5, padding: "10px 0", borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.16))", opacity: removed ? 0.62 : 1 },
 					children: [
 						jsxs("div", { style: { display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", minWidth: 0 }, children: [
 							jsx("span", { style: { fontWeight: 600 }, children: rowName(row) || rowPkg(row) }),
 							jsx("span", { style: { fontSize: 12, opacity: 0.55, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: rowPkg(row) }),
-							on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warning-primary, #d99a3d)"),
+							on ? badge(L.badgeEnabled, "var(--dsw-alias-state-success-primary, #4caf7d)") : badge(L.badgeDisabled, "var(--dsw-alias-state-warn-primary, #d99a3d)"),
 							phaseBadge(row),
 							removed ? badge(L.uninstalledTag, "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))") : null
 						] }),
 						jsx("span", { style: { fontSize: 12, opacity: 0.65, lineHeight: 1.5 }, children: row.description || L.descFallback }),
 						jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginTop: 2 }, children: [
 							jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }, children: [
-								rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-info-primary, #5b9bd5)") : null,
+								rowDirty(row) ? badge(L.badgePending, "var(--dsw-alias-state-business-primary, #5b9bd5)") : null,
 								upd && !upd.error && !upd.applied ? (upd.hasUpdate
-									? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-info-primary, #5b9bd5)")
+									? badge(L.updateAvailable + " v" + upd.current + " → v" + upd.latest, "var(--dsw-alias-state-business-primary, #5b9bd5)")
 									: badge(L.upToDate + (upd.current ? " v" + upd.current : ""), "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))"))
 									: null,
 								upd && upd.applied ? badge(L.updateDone + (upd.applied !== true ? "（v" + upd.applied + "）" : ""), "var(--dsw-alias-state-success-primary, #4caf7d)") : null
@@ -581,7 +683,7 @@ window.__ModuleLoader__.load({
 									style: linkBtnStyle(uninstallArmed === row.id, false),
 									children: uninstallArmed === row.id ? L.uninstallConfirm : L.uninstallBtn
 								}) : null,
-								removed ? jsx("button", {
+								removed && row.restorable !== false ? jsx("button", {
 									type: "button",
 									onClick: () => doRestore(row),
 									style: linkBtnStyle(false, true),
@@ -643,9 +745,9 @@ window.__ModuleLoader__.load({
 				fontSize: 12,
 				padding: "3px 12px",
 				borderRadius: 12,
-				border: "1px solid " + (active || hot ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"),
-				background: active || hot ? "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 12%, transparent)" : "transparent",
-				color: active || hot ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit",
+				border: "1px solid " + (active || hot ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"),
+				background: active || hot ? "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 12%, transparent)" : "transparent",
+				color: active || hot ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit",
 				cursor: "pointer"
 			});
 			const chip = (key, label, count, hot) => jsx("button", {
@@ -675,12 +777,37 @@ window.__ModuleLoader__.load({
 			const viewBtn = (active, label, onClick) => jsx("button", {
 				type: "button",
 				onClick: onClick,
-				style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (active ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"), background: active ? "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 12%, transparent)" : "transparent", color: active ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit" },
+				style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (active ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))"), background: active ? "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 12%, transparent)" : "transparent", color: active ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit" },
 				children: label
 			});
-			const msgColor = /失败|错误/.test(actionMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-info-primary, #5b9bd5)";
+			const msgColor = /失败|错误/.test(actionMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-business-primary, #5b9bd5)";
 			// 有可更新项的个数（工具栏「检查更新」按钮据此高亮 + 显示数量）
 			const updTotal = updateMap ? Object.values(updateMap).filter((it) => it && it.hasUpdate).length : 0;
+
+			// 无效条目横幅（死条目一键清理；疑似陈旧禁用只透出）。
+			const warnColor = "var(--dsw-alias-state-warn-primary, #d99a3d)";
+			const deadList = deadScan && Array.isArray(deadScan.dead) ? deadScan.dead : [];
+			const staleList = deadScan && Array.isArray(deadScan.stale) ? deadScan.stale : [];
+			const deadBanner = deadList.length === 0 ? null : jsxs("div", {
+				style: { fontSize: 12, marginTop: 8, padding: "8px 12px", borderRadius: 8, border: "1px solid " + warnColor, background: "color-mix(in srgb, " + warnColor + " 8%, transparent)", color: warnColor, display: "flex", flexDirection: "column", gap: 6 },
+				children: [
+					jsxs("div", { style: { fontWeight: 600 }, children: [
+						"⚠ " + L.deadScanTitle.replace("{0}", String(deadList.length)),
+						jsx("button", {
+							type: "button",
+							disabled: cleaningDead,
+							onClick: doCleanDead,
+							style: { fontSize: 12, padding: "2px 12px", marginLeft: 10, borderRadius: 7, cursor: cleaningDead ? "default" : "pointer", whiteSpace: "nowrap", border: "1px solid " + warnColor, background: "transparent", color: "inherit", opacity: cleaningDead ? 0.55 : 1 },
+							children: cleaningDead ? L.deadCleaning : L.deadCleanBtn
+						})
+					] }),
+					jsx("ul", { style: { margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }, children: deadList.map((d, i) => jsxs("li", { style: { wordBreak: "break-all" }, children: [
+						d.id,
+						d.name && d.name !== d.id ? "（" + d.name + "）" : ""
+					] }, i)) }),
+					staleList.length > 0 ? jsx("div", { style: { opacity: 0.8 }, children: L.deadStaleTitle.replace("{0}", String(staleList.length)) + staleList.map((s) => s.id).join("、") }) : null
+				]
+			});
 
 			return jsxs("div", { children: [
 				jsx("span", { style: { fontSize: 12, opacity: 0.65 }, children: L.tabHint }),
@@ -700,7 +827,7 @@ window.__ModuleLoader__.load({
 							type: "button",
 							disabled: checkingUpdates,
 							onClick: doCheckUpdates,
-							style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (checkingUpdates ? "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))" : (updTotal > 0 ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))")), background: checkingUpdates ? "transparent" : (updTotal > 0 ? "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 12%, transparent)" : "transparent"), color: checkingUpdates ? "inherit" : (updTotal > 0 ? "var(--dsw-alias-state-info-primary, #5b9bd5)" : "inherit") },
+							style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap", border: "1px solid " + (checkingUpdates ? "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))" : (updTotal > 0 ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "var(--dsw-alias-border-l2, rgba(128,128,128,0.35))")), background: checkingUpdates ? "transparent" : (updTotal > 0 ? "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 12%, transparent)" : "transparent"), color: checkingUpdates ? "inherit" : (updTotal > 0 ? "var(--dsw-alias-state-business-primary, #5b9bd5)" : "inherit") },
 							children: checkingUpdates ? L.checking : (updTotal > 0 ? L.checkUpdates + " · " + updTotal : L.checkUpdates)
 						}),
 						jsx("button", {
@@ -712,14 +839,141 @@ window.__ModuleLoader__.load({
 					] })
 				] }) : null,
 				actionMsg ? jsx("div", { style: { fontSize: 12, marginTop: 8, padding: "6px 12px", borderRadius: 8, border: "1px solid " + msgColor, background: "color-mix(in srgb, " + msgColor + " 8%, transparent)", color: msgColor }, children: actionMsg }) : null,
+				deadBanner,
 				renderChips(),
 				localOnly ? jsx("div", { style: { fontSize: 12, opacity: 0.6, marginTop: 6 }, children: L.localOnlyHint }) : null,
 				renderBody()
 			] });
 		}
 
-		/** 设置侧栏「诊断与管理」分区：诊断 / 备份恢复 / 日志包导出 / 防砖体检 / bundle 顺序。 */
-		function DiagSection() {
+		/**
+		 * 后端服务健康卡（组合完整性运行期探测）。
+		 * 数据通道：内核 pluginInventory.list()（dsh-host-plugin-inventory 对
+		 * Loader 条目的实时只读投影，含 fiberPhase）。判定：
+		 *   条目缺席（missing）  —— Loader 故障隔离把激活失败的 entry 移出树，
+		 *                          缺席即「credentials service is absent」类
+		 *                          延迟暴露的静默前置形态；
+		 *   fiberPhase=failed     —— 挂载失败但仍挂在树上；
+		 *   enabled=false         —— 被用户层显式禁用（黄色提示，非红条）。
+		 */
+		function BackendHealthCard({ list }) {
+			const [health, setHealth] = react.useState({ kind: "loading" });
+			const [busy, setBusy] = react.useState(false);
+
+			const detect = react.useCallback(() => {
+				if (busy) return;
+				setBusy(true);
+				setHealth({ kind: "loading" });
+				Promise.resolve()
+					.then(() => (typeof list === "function" ? list() : Promise.reject(new Error(L.healthNoChannel))))
+					.then((raw) => {
+						const entries = normalizeLive(raw);
+						if (!entries) throw new Error("unexpected inventory shape");
+						// entryId / moduleName 双键索引（覆写行共享 id，取任一命中即可）。
+						const byId = new Map();
+						for (const e of entries) {
+							if (!e || typeof e !== "object") continue;
+							if (e.entryId !== void 0 && !byId.has(e.entryId)) byId.set(e.entryId, e);
+							if (e.moduleName !== void 0 && !byId.has(e.moduleName)) byId.set(e.moduleName, e);
+						}
+						const problems = [];
+						for (const c of CRITICAL_RUNTIME) {
+							// entryId 优先；嵌套树前缀（group/id）场景按 moduleName 兜底。
+							const e = byId.get(c.id) || (c.module ? byId.get(c.module) : void 0);
+							if (!e) problems.push({ ...c, problem: L.healthMissing });
+							else if (e.fiberPhase === "failed") problems.push({ ...c, problem: L.healthFailed });
+							else if (e.enabled === false) problems.push({ ...c, problem: L.healthDisabled });
+						}
+						setBusy(false);
+						setHealth(problems.length === 0 ? { kind: "ok", checked: CRITICAL_RUNTIME.length } : { kind: "bad", problems });
+					})
+					.catch((err) => {
+						setBusy(false);
+						setHealth({ kind: "error", message: String((err && err.message) || err) });
+					});
+			}, [busy, list]);
+
+			// 进入分区即自动检测一次：缺席要「永远可见」，不等用户手点。
+			react.useEffect(() => {
+				detect();
+				// eslint-disable-next-line react-hooks/exhaustive-deps
+			}, []);
+
+			const errColor = "var(--dsw-alias-state-error-primary, #ff7a85)";
+			const warnColor = "var(--dsw-alias-state-warn-primary, #d99a3d)";
+			const okColor = "var(--dsw-alias-state-success-primary, #4caf7d)";
+			const body = (() => {
+				if (health.kind === "loading") return jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: L.healthRunning });
+				if (health.kind === "error") return jsx("div", { style: { fontSize: 12, color: errColor, wordBreak: "break-all" }, children: "⛔ " + L.healthError + health.message });
+				if (health.kind === "ok") return jsx("div", { style: { fontSize: 12, color: okColor }, children: L.healthOk });
+				// bad：红条（缺席/挂载失败）或黄条（仅禁用）。
+				const hard = health.problems.filter((p) => p.problem !== L.healthDisabled);
+				const color = hard.length > 0 ? errColor : warnColor;
+				return jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 6 }, children: [
+					jsxs("div", { style: { fontSize: 12, fontWeight: 600, color, padding: "8px 10px", borderRadius: 8, border: "1px solid " + color, background: "color-mix(in srgb, " + color + " 10%, transparent)" }, children: [
+						hard.length > 0 ? "⛔ " + L.healthMissing + " / " + L.healthFailed + "（" + hard.length + "）" : "⚠ " + L.healthDisabled + "（" + health.problems.length + "）"
+					] }),
+					jsx("ul", { style: { margin: 0, paddingLeft: 18, fontSize: 12, display: "flex", flexDirection: "column", gap: 4 }, children: health.problems.map((p, i) => jsxs("li", { style: { wordBreak: "break-all" }, children: [
+						jsx("span", { style: { fontWeight: 600, color: p.problem === L.healthDisabled ? warnColor : errColor }, children: "「" + p.label + "」" + p.problem + "：" }),
+						jsx("span", { children: p.consequence })
+					] }, i)) }),
+					jsx("div", { style: { fontSize: 12, opacity: 0.75 }, children: L.healthFix })
+				] });
+			})();
+
+			return jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: [
+				jsx("span", { style: { fontSize: 13, fontWeight: 600 }, children: L.healthTitle }),
+				jsx("div", { style: { fontSize: 11, opacity: 0.55 }, children: L.healthHint }),
+				body,
+				jsx("div", { children: jsx("button", {
+					type: "button", disabled: busy, onClick: detect,
+					style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: busy ? "default" : "pointer", whiteSpace: "nowrap", border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))", background: "transparent", color: "inherit", opacity: busy ? 0.55 : 1 },
+					children: busy ? L.healthRunning : L.healthRun
+				}) })
+			] });
+		}
+
+		/**
+		 * 已移除服务提示卡（issue #176）。
+		 * 纯展示 + 只读：从运行态清单（pluginInventory）统计长期 pending 的插件，
+		 * 并列出内核已移除的服务与作者适配指引。不改动 BackendHealthCard 的关键
+		 * 服务判定（CRITICAL_RUNTIME）——只新增一块自包含的提示，与 #175 无交叉。
+		 */
+		function RemovedServiceNoticeCard({ list }) {
+			const [entries, setEntries] = react.useState(null);
+			const [busy, setBusy] = react.useState(false);
+			const detect = react.useCallback(() => {
+				if (busy) return;
+				setBusy(true);
+				Promise.resolve()
+					.then(() => (typeof list === "function" ? list() : null))
+					.then((raw) => { const e = normalizeLive(raw); setEntries(Array.isArray(e) ? e : []); })
+					.catch(() => setEntries([]))
+					.finally(() => setBusy(false));
+			}, [busy, list]);
+			react.useEffect(() => { detect(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+			const warnColor = "var(--dsw-alias-state-warn-primary, #d99a3d)";
+			const pending = (entries || []).filter((e) => e && e.fiberPhase === "pending");
+			return jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: [
+				jsx("div", { style: { fontSize: 11, opacity: 0.55 }, children: L.removedHint }),
+				entries === null
+					? jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: L.healthRunning })
+					: pending.length === 0
+						? jsx("div", { style: { fontSize: 12, color: "var(--dsw-alias-state-success-primary, #4caf7d)" }, children: L.removedPendingNone })
+						: jsxs("div", { style: { fontSize: 12, color: warnColor }, children: [
+							L.removedPendingCount.replace("{0}", String(pending.length)),
+							jsx("ul", { style: { margin: "4px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }, children: pending.map((e, i) => jsx("li", { style: { wordBreak: "break-all" }, children: String(e.moduleName || e.entryId || "?") }, i)) }),
+						] }),
+				jsx("ul", { style: { margin: 0, paddingLeft: 18, fontSize: 12, display: "flex", flexDirection: "column", gap: 4 }, children: REMOVED_CAPABILITIES.map((c, i) => jsxs("li", { style: { wordBreak: "break-all" }, children: [
+					jsx("span", { style: { fontWeight: 600, color: warnColor }, children: "「" + c.label + "」" + L.removedSvcPrefix + "（" + c.service + "，自 " + c.removedIn + "）：" }),
+					jsx("span", { children: c.note + " " + L.removedUseInstead + " " + c.useInstead.join(" / ") + "。" })
+				] }, i)) }),
+				jsx("div", { children: jsx("button", { type: "button", disabled: busy, onClick: detect, style: { fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: busy ? "default" : "pointer", whiteSpace: "nowrap", border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))", background: "transparent", color: "inherit", opacity: busy ? 0.55 : 1 }, children: busy ? L.healthRunning : L.healthRun }) })
+			] });
+		}
+
+		/** 设置侧栏「诊断与管理」分区：后端服务健康 / 诊断 / 备份恢复 / 日志包导出 / 防砖体检 / bundle 顺序。 */
+		function DiagSection({ list }) {
 			const [diagReport, setDiagReport] = react.useState(null);
 			const [diagBusy, setDiagBusy] = react.useState(false);
 			const [bkBusy, setBkBusy] = react.useState(false);
@@ -917,7 +1171,7 @@ window.__ModuleLoader__.load({
 				style: { display: "flex", flexDirection: "column", gap: 8, padding: "12px 14px", borderRadius: 10, border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))" },
 				children: [jsx("span", { style: { fontSize: 13, fontWeight: 600 }, children: title }), childrenJsx]
 			});
-			const msgColor = /失败|错误/.test(bkMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-info-primary, #5b9bd5)";
+			const msgColor = /失败|错误/.test(bkMsg || "") ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-business-primary, #5b9bd5)";
 
 			// 诊断报告三色区块渲染
 			const diagBody = (() => {
@@ -932,7 +1186,7 @@ window.__ModuleLoader__.load({
 				// 每次自愈写入 userData/self-heal-history.json，随诊断报告带回）。
 				const selfHealBox = (items) => {
 					if (!items || items.length === 0) return null;
-					return jsxs("div", { style: { fontSize: 12, padding: "8px 10px", borderRadius: 8, marginTop: 6, background: "color-mix(in srgb, var(--dsw-alias-state-info-primary, #5b9bd5) 10%, transparent)", color: "var(--dsw-alias-state-info-primary, #5b9bd5)", display: "flex", flexDirection: "column", gap: 3 }, children: [
+					return jsxs("div", { style: { fontSize: 12, padding: "8px 10px", borderRadius: 8, marginTop: 6, background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #5b9bd5) 10%, transparent)", color: "var(--dsw-alias-state-business-primary, #5b9bd5)", display: "flex", flexDirection: "column", gap: 3 }, children: [
 						jsx("span", { style: { fontWeight: 600 }, children: L.diagSelfHealTitle }),
 						items.map((it, i) => jsx("div", { key: i, style: { wordBreak: "break-all" }, children: (it.kind === "overlay" ? L.diagSelfHealDisabled : it.kind === "patch-layer" ? L.diagSelfHealReset : L.diagSelfHealRemoved).replace("{0}", (it.kind === "patch-layer" && it.backup ? String(it.backup).split(/[\\/]/).pop() : (it.names || []).join("、"))) + "（" + new Date(it.ts).toLocaleString() + "）" }))
 					] });
@@ -951,7 +1205,7 @@ window.__ModuleLoader__.load({
 				return jsxs("div", { children: [
 					selfHealBox(selfHeal),
 					section(L.diagErrors, errs, "var(--dsw-alias-state-error-primary, #ff7a85)", "⛔"),
-					section(L.diagWarnings, warns, "var(--dsw-alias-state-warning-primary, #d99a3d)", "⚠"),
+					section(L.diagWarnings, warns, "var(--dsw-alias-state-warn-primary, #d99a3d)", "⚠"),
 					section(L.diagInfos, infos, "var(--dsw-alias-label-tertiary, rgba(128,128,128,0.6))", "ℹ")
 				] });
 			})();
@@ -980,7 +1234,7 @@ window.__ModuleLoader__.load({
 						if (!c.issues || c.issues.length === 0) return jsx("div", { key: c.name, style: { opacity: 0.85, wordBreak: "break-all" }, children: "✔ " + c.name + (c.source ? "（" + c.source + "）" : "") });
 						return jsxs("div", { key: c.name, style: { wordBreak: "break-all" }, children: [
 							jsx("span", { children: c.name + "（" + c.source + "）" }),
-							jsx("ul", { style: { margin: "2px 0 0", paddingLeft: 16 }, children: c.issues.map((it, i) => jsx("li", { key: i, style: { color: it.level === "error" ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-warning-primary, #d99a3d)" }, children: (it.level === "error" ? "⛔ " : "⚠ ") + it.text })) })
+							jsx("ul", { style: { margin: "2px 0 0", paddingLeft: 16 }, children: c.issues.map((it, i) => jsx("li", { key: i, style: { color: it.level === "error" ? "var(--dsw-alias-state-error-primary, #ff7a85)" : "var(--dsw-alias-state-warn-primary, #d99a3d)" }, children: (it.level === "error" ? "⛔ " : "⚠ ") + it.text })) })
 						] });
 					}) }) : null
 				] });
@@ -995,7 +1249,7 @@ window.__ModuleLoader__.load({
 				return jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }, children: [
 					r.conflicts.length === 0 && r.suggested && r.suggested.ok
 						? jsx("div", { style: { color: "var(--dsw-alias-state-success-primary, #4caf7d)" }, children: L.diagOrderOk })
-						: (r.conflicts.length > 0 ? jsx("div", { style: { color: "var(--dsw-alias-state-warning-primary, #d99a3d)", fontWeight: 600 }, children: "⚠ " + L.diagOrderConflictN.replace("{0}", String(r.conflicts.length)) }) : null),
+						: (r.conflicts.length > 0 ? jsx("div", { style: { color: "var(--dsw-alias-state-warn-primary, #d99a3d)", fontWeight: 600 }, children: "⚠ " + L.diagOrderConflictN.replace("{0}", String(r.conflicts.length)) }) : null),
 					r.conflicts.length > 0 ? jsx("ul", { style: { margin: 0, paddingLeft: 16 }, children: r.conflicts.map((c, i) => jsx("li", { key: i, style: { wordBreak: "break-all" }, children: "「" + c.name + "」" + c.reason })) }) : null,
 					r.suggested && r.suggested.ok ? jsxs("div", { children: [
 						jsx("div", { style: { opacity: 0.7, marginTop: 2 }, children: "建议顺序：" }),
@@ -1017,6 +1271,8 @@ window.__ModuleLoader__.load({
 
 			return jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 12 }, children: [
 				jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: L.diagHint }),
+				card(L.healthTitle, jsx(BackendHealthCard, { list })),
+				card(L.removedTitle, jsx(RemovedServiceNoticeCard, { list })),
 				card(L.diagTitle + " — 诊断", jsxs("div", { children: [
 					actionBtn(diagBusy ? L.diagRunning : L.diagRun, doRunDiag, diagBusy, false),
 					diagBody
@@ -1028,7 +1284,7 @@ window.__ModuleLoader__.load({
 					jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }, children: [
 						actionBtn(bkBusy ? L.restorePicking : L.restorePick, doPickRestore, bkBusy, false)
 					] }),
-					restorePreview ? jsxs("div", { style: { marginTop: 8, padding: 10, borderRadius: 8, border: "1px solid var(--dsw-alias-state-warning-primary, #d99a3d)", background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary, #d99a3d) 8%, transparent)", fontSize: 12 }, children: [
+					restorePreview ? jsxs("div", { style: { marginTop: 8, padding: 10, borderRadius: 8, border: "1px solid var(--dsw-alias-state-warn-primary, #d99a3d)", background: "color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d99a3d) 8%, transparent)", fontSize: 12 }, children: [
 						jsx("div", { style: { fontWeight: 600 }, children: L.restorePreview }),
 						jsx("div", { style: { marginTop: 4, opacity: 0.85, wordBreak: "break-all" }, children: restorePreview.file }),
 						jsx("div", { style: { marginTop: 2, opacity: 0.85 }, children: L.restorePreviewFiles.replace("{0}", String(restorePreview.files == null ? 0 : restorePreview.files)).replace("{1}", restorePreview.createdAt ? new Date(restorePreview.createdAt).toLocaleString() : "-") }),
@@ -1072,13 +1328,16 @@ window.__ModuleLoader__.load({
 				label: () => L.tab,
 				inject: injected
 			}, PluginManagerTab), "dsh-plugin-manager: plugins management tab");
-			// 「插件」分区下的第二个标签「诊断与管理」（与「管理」并列）：诊断 / 备份恢复 /
-			// 日志包导出 / 防砖体检 / bundle 顺序检测与重排。
+			// 「插件」分区下的第二个标签「诊断与管理」（与「管理」并列）：后端服务健康 /
+			// 诊断 / 备份恢复 / 日志包导出 / 防砖体检 / bundle 顺序检测与重排。
+			// inject 与「管理」标签同源（pluginInventory.list）：健康卡走内核运行期
+			// Loader 投影，管理标签走本地桥 + live 注册表合并。
 			ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register({
 				name: "settings.plugins.tab",
 				id: "diag",
 				order: 25,
-				label: () => L.diagTitle
+				label: () => L.diagTitle,
+				inject: injected
 			}, DiagSection), "dsh-plugin-manager: diagnostics & maintenance tab");
 		}
 

@@ -13,11 +13,14 @@
 // 端点：https://api.deepseek.com/user/balance；可用环境变量覆盖：
 //   DEEPSEEK_BALANCE_URL —— 完整端点 URL（自定义代理/镜像）
 //   DEEPSEEK_API_BASE    —— API 基址（自动拼接 /user/balance）
+// 网络代理（P1-2+A-7）：HTTPS_PROXY/HTTP_PROXY/NO_PROXY 环境变量（CONNECT
+// 隧道 / absolute-form，见 proxyFor 与 ConnectProxyAgent）。
 // OpenCode Go 端点：OPENCODE_USAGE_URL（默认 https://opencode.ai/zen/go/v1/usage）。
 // ===========================================================================
 
 const https = require('node:https');
 const http = require('node:http');
+const tls = require('node:tls');
 const fs = require('node:fs');
 const path = require('node:path');
 const { homedir } = require('node:os');
@@ -32,6 +35,27 @@ const DEFAULT_OPENCODE_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage';
 const FETCH_DEFAULT_TIMEOUT_MS = 15000; // 总超时（自请求发出起算，跨重定向共享 deadline）
 const FETCH_MAX_REDIRECTS = 5;          // 重定向上限（超出拒绝）
 const FETCH_MAX_BODY_BYTES = 1024 * 1024; // 响应体上限（按字节计，非字符）
+
+// ---------------------------------------------------------------------------
+// 配置文件 mtime 缓存（P1-2+A-7，pr-107 移植）：每 3 分钟轮询都会
+// readFileSync settings.yaml / .credentials.yaml，最小化场景无意义读盘；
+// mtime+size 未变直接复用上次内容，「改凭证后下轮生效」= mtime 变化触发重读。
+// ---------------------------------------------------------------------------
+const fileTextCache = new Map(); // path -> { mtimeMs, size, text }
+
+function readFileCached(p) {
+  try {
+    const st = fs.statSync(p);
+    const hit = fileTextCache.get(p);
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.text;
+    const text = fs.readFileSync(p, 'utf8');
+    fileTextCache.set(p, { mtimeMs: st.mtimeMs, size: st.size, text });
+    return text;
+  } catch {
+    fileTextCache.delete(p);
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 模型价格（¥/百万 token）。官方定价：
@@ -69,8 +93,25 @@ const PRICING_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat',
 // 峰谷定价生效节点：2026-08-17 00:00 北京时间 = 2026-08-16 16:00 UTC。
 const PEAK_PRICING_SINCE_UTC = Date.UTC(2026, 7, 16, 16, 0, 0);
 
+// 周末全天空闲规则生效节点：2026-08-23 00:00 北京时间 = 2026-08-22 16:00 UTC。
+// 官方 2026-08-23 起周六/周日全天按空闲价计（issue #158 / #168）；此前周末
+// 沿用工作日窗口（9-12 / 14-18 为高峰），故该规则不得溯及既往——判定
+// 「历史时刻」时，门槛之前的周末仍按旧窗口返回高峰。
+// 口径对齐来源：assets/plugins/dsh-offpeak/src/index.js 的
+//   WEEKEND_OFFPEAK_EFFECTIVE_FROM = "2026-08-23" 与 isPeak()（北京时间日历日
+//   字符串比较）。本模块用固定 +8 偏移（无夏令时），与之一一等价；两处若有
+//   调整须同步修改，交叉一致性由 scripts/test/unit-balance-weekend.test.js 守住。
+const WEEKEND_OFFPEAK_SINCE_UTC = Date.UTC(2026, 7, 22, 16, 0, 0);
+
 // 模型缺失 / 未知时的兜底档（与价目表回退一致，避免少报费用）。
 const DEFAULT_MODEL = 'deepseek-v4-pro';
+
+// 计价档位（issue #168）：客户端增量账本按「消耗时刻所属档位」入账，
+// 档位名即 periodTables 的键。
+//   'legacy' —— 峰谷定价生效前的旧版固定价期；
+//   'peak'   —— 峰谷期内高峰窗口（全价）；
+//   'off'    —— 峰谷期内空闲时段（半价，含 2026-08-23 起的周末全天）。
+const PRICING_TIERS = ['legacy', 'peak', 'off'];
 
 // ---------------------------------------------------------------------------
 // 纯函数工具
@@ -82,22 +123,29 @@ function escapeRegExp(s) {
 }
 
 /**
- * 从 .credentials.yaml 读取「顶层键」的值（`KEY: value`，值可带引号）。
- * 安全约束：只匹配行首（列 0）的键——任意嵌套段下的同名键一律不读，
- * 避免读到插件 config 等其它段下的同名值。
+ * 从 .credentials.yaml 读取「顶层引用键」的值（`KEY: value`，值可带引号）。
+ * 兼容两种布局（dsh-credentials-local 的迁移语义）：
+ *   · 旧平铺（pre-release）：`KEY: value` 列 0；
+ *   · v1 嵌套：`version: 1` + 原 行原样缩进两格进 `refs:`（records: 段的键
+ *     形如 `provider/id` 含 `/`，与 POSIX 标识符键名（无 `/`）不可能同名，
+ *     故两格缩进匹配不会误读 records 值）。
+ * 安全约束：只匹配列 0 或恰好两格缩进的键——更深嵌套段下的同名键一律不读。
  * 值形态支持：无引号标量（行尾 ` #` 视为注释截断）、单/双引号标量。
+ * 文件读取走 readFileCached（mtime+size 复用，P1-2+A-7），「改凭证后下轮生效」。
  * @param {string} dshHome DSH_HOME 目录
  * @param {string} keyName 键名（可含正则元字符，内部已转义）
  * @returns {string} 读取失败/未找到返回空串
  */
 function readCredentialLine(dshHome, keyName) {
   try {
-    const text = fs.readFileSync(path.join(dshHome, '.credentials.yaml'), 'utf8');
-    const keyPattern = new RegExp('^("?)' + escapeRegExp(keyName) + '\\1\\s*:\\s*(.*)$');
+    const text = readFileCached(path.join(dshHome, '.credentials.yaml'));
+    if (text === null) return '';
+    // (?:^|  ) 双形态：列 0（旧平铺）或两格缩进（v1 refs: 下）。
+    const keyPattern = new RegExp('^(?:("?)' + escapeRegExp(keyName) + '\\1\\s*:\\s*(.*)$|  ("?)' + escapeRegExp(keyName) + '\\3\\s*:\\s*(.*)$)');
     for (const line of text.split(/\r?\n/)) {
       const m = keyPattern.exec(line);
       if (!m) continue;
-      const raw = m[2];
+      const raw = m[2] !== undefined ? m[2] : m[4];
       const quoted = /^"((?:[^"\\]|\\.)*)"/.exec(raw) || /^'([^']*)'/.exec(raw);
       let value;
       if (quoted) {
@@ -176,17 +224,66 @@ async function queryOpencodeUsage(dshHome) {
 }
 
 /**
- * 当前（或指定时刻）是否处于高峰时段（北京时间 9:00-12:00、14:00-18:00）。
- * 契约：峰谷定价生效（2026-08-16 16:00 UTC）之前一律 false——旧版期没有
- * 峰谷概念，避免「chip 显示高峰价、实际按旧版固定价计」的自相矛盾。
+ * 当前（或指定时刻）是否处于高峰时段（北京时间工作日 9:00-12:00、14:00-18:00）。
+ * 契约：
+ *   · 峰谷定价生效（2026-08-16 16:00 UTC）之前一律 false——旧版期没有
+ *     峰谷概念，避免「chip 显示高峰价、实际按旧版固定价计」的自相矛盾；
+ *   · 2026-08-23 00:00 北京时间起，周六/周日全天按空闲价（返回 false），
+ *     该规则不溯及既往：门槛之前的周末仍按旧窗口判定（issue #168）。
  * 无效日期返回 false（宁可显示空闲，不可显示错误的高峰态）。
  */
 function isPeakHour(date) {
   const d = date ? new Date(date) : new Date();
   if (!Number.isFinite(d.getTime())) return false;
   if (d.getTime() < PEAK_PRICING_SINCE_UTC) return false;
-  const hour = new Date(d.getTime() + 8 * 3600 * 1000).getUTCHours();
+  // 平移到北京时区（固定 +8，无夏令时），用 UTC 分量读北京日历字段。
+  const shifted = new Date(d.getTime() + 8 * 3600 * 1000);
+  if (d.getTime() >= WEEKEND_OFFPEAK_SINCE_UTC) {
+    const day = shifted.getUTCDay(); // 0=周日 6=周六
+    if (day === 0 || day === 6) return false;
+  }
+  const hour = shifted.getUTCHours();
   return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
+}
+
+/**
+ * 指定时刻的计价档位（issue #168）：'legacy' | 'peak' | 'off'。
+ * 与 effectivePrice()/isPeakHour() 共用同一套门槛，保证「档位 ↔ 价目」不矛盾：
+ *   periodTables()[pricingTier(t)] 恒等于 priceTable(t)（未叠加用户覆盖时）。
+ * 无效日期按当前时刻求值（与 isPeakHour 的保守取向不同，此处取「不崩」即可）。
+ */
+function pricingTier(date) {
+  const d = date ? new Date(date) : new Date();
+  const t = Number.isFinite(d.getTime()) ? d.getTime() : Date.now();
+  if (t < PEAK_PRICING_SINCE_UTC) return 'legacy';
+  return isPeakHour(new Date(t)) ? 'peak' : 'off';
+}
+
+/**
+ * 三张固定价目表（peak / off / legacy，全模型），与「现在」无关。
+ * 客户端增量账本据此把每个用量增量按消耗时刻档位选表计价，峰谷切换时
+ * 不再重算历史（issue #168）。每次调用返回全新对象，调用方可安全叠加覆盖。
+ */
+function periodTables() {
+  const dayAt = (hour) => new Date(Date.UTC(2026, 7, 17, hour, 0, 0) - 8 * 3600 * 1000);
+  // 取一个峰谷期内的高峰时刻与空闲时刻，复用 effectivePrice 的换算逻辑，
+  // 避免在这里重复 /2 的算术（防止两处口径漂移）。
+  // 2026-08-17 是周一：北京 10:00 为高峰，北京 13:00 为空闲。
+  const peakTable = priceTable(dayAt(10));
+  const offTable = priceTable(dayAt(13));
+  const legacyTable = priceTable(new Date(PEAK_PRICING_SINCE_UTC - 1000));
+  return { peak: peakTable, off: offTable, legacy: legacyTable };
+}
+
+/**
+ * 定价规则生效节点（ISO 串），供客户端/展示层说明「何时开始按峰谷计价」。
+ * 门槛常量只此一处定义，客户端不再硬编码日期。
+ */
+function pricingSince() {
+  return {
+    peakPricing: new Date(PEAK_PRICING_SINCE_UTC).toISOString(),
+    weekendOffpeak: new Date(WEEKEND_OFFPEAK_SINCE_UTC).toISOString(),
+  };
 }
 
 /**
@@ -235,10 +332,12 @@ function readApiKey(dshHome) {
  *   1. 只认「行首 agent-default-model 后紧跟冒号」的顶层段（agent-default-model-xxx 不算）；
  *   2. 段内取缩进最浅的 `model:` 行——嵌套更深段下的同名键不优先；
  *   3. 无缩进的下一行结束该段。
+ * 文件读取走 readFileCached（mtime+size 复用，P1-2+A-7），最小化场景不读盘。
  */
 function readActiveModel(dshHome) {
   try {
-    const text = fs.readFileSync(path.join(dshHome, 'settings.yaml'), 'utf8');
+    const text = readFileCached(path.join(dshHome, 'settings.yaml'));
+    if (text === null) return '';
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       if (!/^agent-default-model\s*:/.test(lines[i])) continue;
@@ -279,6 +378,78 @@ function parseAmount(value) {
   const n = Number(cleaned);
   if (!Number.isFinite(n)) return null;
   return Math.max(0, n);
+}
+
+// ---------------------------------------------------------------------------
+// 代理支持（P1-2+A-7 增补，pr-107 移植；DEEPSEEK_BALANCE_URL / DEEPSEEK_API_BASE
+// 覆盖保留）：
+//   https URL → HTTPS_PROXY/https_proxy 的 CONNECT 隧道（tls 包装）
+//   http  URL → HTTP_PROXY/http_proxy 的 absolute-form GET
+//   NO_PROXY/no_proxy 命中（精确主机或域名后缀，* 全放行）→ 直连
+// ---------------------------------------------------------------------------
+
+/** 纯函数：为 URL 选择代理 URL（无代理/NO_PROXY 命中/非法 → null）。 */
+function proxyFor(url) {
+  const env = process.env;
+  const isHttps = url.startsWith('https:');
+  const raw = isHttps ? (env.HTTPS_PROXY || env.https_proxy) : (env.HTTP_PROXY || env.http_proxy);
+  if (!raw) return null;
+  let host = '';
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return null; }
+  const noProxy = env.NO_PROXY || env.no_proxy;
+  if (noProxy) {
+    for (const part of String(noProxy).split(',')) {
+      const p = part.trim().toLowerCase();
+      if (!p) continue;
+      if (p === '*' || host === p || host.endsWith('.' + p.replace(/^\./, ''))) return null;
+    }
+  }
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u;
+  } catch { return null; }
+}
+
+/** https.Agent 子类：经代理 CONNECT 隧道建连，再做 TLS 包装（无第三方依赖）。 */
+class ConnectProxyAgent extends https.Agent {
+  constructor(proxy) {
+    super({ keepAlive: false });
+    this.proxy = proxy;
+  }
+  createConnection(options, callback) {
+    const host = options.host || 'localhost';
+    const port = options.port || 443;
+    const proxy = this.proxy;
+    const proxyPort = proxy.port || (proxy.protocol === 'https:' ? 443 : 80);
+    const headers = {};
+    if (proxy.username) {
+      headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(
+        decodeURIComponent(proxy.username) + ':' + decodeURIComponent(proxy.password || '')
+      ).toString('base64');
+    }
+    // https:// 代理需要先对代理自身建立 TLS（两层隧道），否则明文 CONNECT
+    // 发给 TLS 端口会被代理拒绝；http:// 代理则明文直连。
+    const proxyClient = proxy.protocol === 'https:' ? https : http;
+    const proxyReq = proxyClient.request({
+      host: proxy.hostname,
+      port: proxyPort,
+      method: 'CONNECT',
+      path: host + ':' + port,
+      headers,
+    });
+    proxyReq.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        callback(new Error('代理 CONNECT 失败: HTTP ' + res.statusCode));
+        return;
+      }
+      const tlsSocket = tls.connect({ socket, servername: host, host, port }, () => callback(null, tlsSocket));
+      tlsSocket.on('error', (err) => callback(err));
+    });
+    proxyReq.on('error', (err) => callback(err));
+    proxyReq.end();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +546,7 @@ function fetchJson(url, apiKey, options = {}) {
       settle(reject, err);
     };
 
-    const req = lib.get(url, { headers }, (res) => {
+    const onResponse = (res) => {
       // 跟随 3xx 重定向（CDN 常见）；下一跳共享同一 deadline（总超时）。
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
@@ -423,7 +594,32 @@ function fetchJson(url, apiKey, options = {}) {
           settle(reject, new Error('JSON 解析失败'));
         }
       });
-    });
+    };
+
+    // 代理分派（P1-2+A-7，pr-107 移植）：proxyFor 命中时 https 走 CONNECT
+    // 隧道 agent，http 走手动 absolute-form（node http 模块不读环境代理）。
+    const proxy = proxyFor(url);
+    let req;
+    if (proxy && url.startsWith('https:')) {
+      req = lib.get(url, { headers, agent: new ConnectProxyAgent(proxy) }, onResponse);
+    } else if (proxy) {
+      const proxyHeaders = { ...headers, Host: new URL(url).host };
+      if (proxy.username) {
+        proxyHeaders['Proxy-Authorization'] = 'Basic ' + Buffer.from(
+          decodeURIComponent(proxy.username) + ':' + decodeURIComponent(proxy.password || '')
+        ).toString('base64');
+      }
+      req = http.request({
+        host: proxy.hostname,
+        port: proxy.port || 80,
+        method: 'GET',
+        path: url,
+        headers: proxyHeaders,
+      }, onResponse);
+      req.end();
+    } else {
+      req = lib.get(url, { headers }, onResponse);
+    }
 
     // 总超时：跨重定向共享 deadline，slow-drip 也无法绕过。
     totalTimer = setTimeout(() => fail(new Error('请求超时（总时长 ' + timeoutMs + 'ms）')), remaining);
@@ -488,6 +684,13 @@ module.exports = {
   effectivePrice,
   isPeakHour,
   priceTable,
+  // 峰谷增量计价契约（issue #168，新增字段语义见 docs/balance-architecture.md §2）
+  pricingTier,
+  periodTables,
+  pricingSince,
+  PRICING_TIERS,
+  PEAK_PRICING_SINCE_UTC,
+  WEEKEND_OFFPEAK_SINCE_UTC,
   // 端点解析（测试用）
   balanceEndpoint,
   opencodeUsageEndpoint,
@@ -499,4 +702,8 @@ module.exports = {
   readApiKey,
   readOpencodeGoKey,
   readCredentialLine,
+  // 代理与缓存（P1-2+A-7，pr-107 移植；单测直接覆盖）
+  readFileCached,
+  proxyFor,
+  ConnectProxyAgent,
 };

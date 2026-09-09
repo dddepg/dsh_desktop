@@ -38,6 +38,14 @@ const WALK_SWEEP_MS = 30000; // 目录对账（发现新会话、清理消失的
 // frame is encountered, it searches forward for the next valid frame magic and
 // continues scanning, so frames appended after a corrupt region are still
 // recovered instead of being silently dropped.
+//
+// 2026-08 修复（C1 迁移配套）：indexOf 的针从 magic 数值换成 4 字节 Buffer
+// 模式——Buffer.indexOf(number) 按单字节搜（数值被 &0xFF → 0x28），此前
+// 只因 magic 首字节恰为 0x28 而「碰巧」工作（沿途 0x28 逐跳）；torn 分支
+// 起点从 offset+1 改为 offset——紧跟在截断帧后的下一帧 magic 就在 offset
+// 处，+1 会跳过它（此前该形态下后续帧被永久吞掉）。
+const MAGIC_BYTES = Buffer.alloc(4);
+MAGIC_BYTES.writeUInt32LE(ZSTD_MAGIC, 0);
 function scanZstdFrames(buffer) {
   const frames = [];
   let offset = 0;
@@ -46,8 +54,8 @@ function scanZstdFrames(buffer) {
     if (buffer.length - offset < 4) return { frames, tornStart: start };
     if (buffer.readUInt32LE(offset) !== ZSTD_MAGIC) {
       // Bytes before the next frame magic: skip the garbage and resume at the
-      // next valid frame boundary, if any.
-      const next = buffer.indexOf(ZSTD_MAGIC, offset + 1);
+      // next valid frame boundary, if any.（当前字节已验证非 magic → 从 +1 起。）
+      const next = buffer.indexOf(MAGIC_BYTES, offset + 1);
       if (next === -1) return { frames, tornStart: start };
       offset = next;
       continue;
@@ -57,7 +65,7 @@ function scanZstdFrames(buffer) {
     const descriptor = buffer.readUInt8(offset);
     offset += 1;
     if ((descriptor & 24) !== 0) {
-      const next = buffer.indexOf(ZSTD_MAGIC, offset + 1);
+      const next = buffer.indexOf(MAGIC_BYTES, offset);
       if (next === -1) return { frames, tornStart: start };
       offset = next;
       continue;
@@ -81,12 +89,17 @@ function scanZstdFrames(buffer) {
       const blockSize = blockHeader >>> 3;
       if (blockType === 3) { torn = true; break; }
       const payloadBytes = blockType === 1 ? 1 : blockSize;
-      if (buffer.length - offset < payloadBytes) return { frames, tornStart: start };
+      // 帧体截断走 torn 恢复路径（模块头承诺的语义）：帧确实写到一半
+      //（尾部即结尾）时找不到后续 magic，仍按 tornStart 返回下次重读；
+      // 损坏/截断帧之后还有完整帧时跳过去恢复扫描（修复：此前直接
+      // return，后续帧被永久吞掉）。
+      if (buffer.length - offset < payloadBytes) { torn = true; break; }
       offset += payloadBytes;
       if (lastBlock) break;
     }
     if (torn) {
-      const next = buffer.indexOf(ZSTD_MAGIC, offset + 1);
+      // 下一帧可能恰好从 offset 开始（紧贴截断帧追加）→ 从 offset 起搜。
+      const next = buffer.indexOf(MAGIC_BYTES, offset);
       if (next === -1) return { frames, tornStart: start };
       offset = next;
       continue;
@@ -121,9 +134,15 @@ function expandRow(line) {
 }
 
 class SessionWatcher {
-  constructor({ sessionsDir, onTurnEnd, log, statSweepMs, walkSweepMs }) {
+  constructor({ sessionsDir, onTurnEnd, onTurnStart, onApprovalAsked, log, statSweepMs, walkSweepMs }) {
     this.sessionsDir = sessionsDir;
     this.onTurnEnd = onTurnEnd || (() => {});
+    // 回合进行中信号（供内核探活环「忙碌」判定）：顶层会话看到 turn/start
+    // 即进入进行中、turn/end 即结束。默认 noop——Electron 通知路径不受影响。
+    this.onTurnStart = onTurnStart || (() => {});
+    // 权限申请信号（内核 approval/asked 写入会话事件流）：用于任务栏闪烁等
+    // 未聚焦提醒。默认 noop——不影响既有通知路径。
+    this.onApprovalAsked = onApprovalAsked || (() => {});
     this.log = log || (() => {});
     this.files = new Map(); // absPath -> { consumed, lastSize, header, title, baseline }
     this.dirCache = { at: 0, files: [] };
@@ -319,8 +338,10 @@ class SessionWatcher {
       }
       // 有损坏空隙时，把垃圾区之后恢复的帧纳入计数，避免 turn/end 被吞。
       if (hasGap) {
+        let turnStarts = 0;
         let turnEnds = 0;
         let assistantMessages = 0;
+        let approvalAsked = 0;
         for (const f of frames) {
           let text;
           try { text = decodeFrame(tail.subarray(f.start, f.end)); } catch { break; }
@@ -330,13 +351,17 @@ class SessionWatcher {
               if (!ev || typeof ev !== 'object') continue;
               if (ev.type === 'session/title' && ev.data && typeof ev.data.title === 'string') rec.title = ev.data.title;
               if (ev.type === 'turn/start' || ev.type === 'turn/end') rec.hasTurnEvents = true;
+              if (ev.type === 'turn/start') turnStarts += 1;
               if (ev.type === 'turn/end') turnEnds += 1;
               if (ev.type === 'assistant/message') assistantMessages += 1;
+              if (ev.type === 'approval/asked') approvalAsked += 1;
             }
           }
         }
+        if (turnStarts > 0) this.emitStart(rec, turnStarts);
+        if (approvalAsked > 0) this.emitApprovalAsked(rec);
         const count = rec.hasTurnEvents ? turnEnds : assistantMessages;
-        if (count > 0) this.emit(rec, count);
+        if (count > 0) this.emit(rec, count, rec.hasTurnEvents);
       }
       // 没有完整帧则不推进（tornStart 提示未写满）。
       rec.baseline = true;
@@ -345,8 +370,10 @@ class SessionWatcher {
     }
 
     // 增量：只解码 consumed 之后的新完整帧。
+    let turnStarts = 0;
     let turnEnds = 0;
     let assistantMessages = 0;
+    let approvalAsked = 0;
     let consumed = readFrom;
     for (const f of frames) {
       let text;
@@ -357,8 +384,10 @@ class SessionWatcher {
           if (!ev || typeof ev !== 'object') continue;
           if (ev.type === 'session/title' && ev.data && typeof ev.data.title === 'string') rec.title = ev.data.title;
           if (ev.type === 'turn/start' || ev.type === 'turn/end') rec.hasTurnEvents = true;
+          if (ev.type === 'turn/start') turnStarts += 1;
           if (ev.type === 'turn/end') turnEnds += 1;
           if (ev.type === 'assistant/message') assistantMessages += 1;
+          if (ev.type === 'approval/asked') approvalAsked += 1;
         }
       }
       consumed = readFrom + f.end;
@@ -366,13 +395,16 @@ class SessionWatcher {
     rec.consumed = consumed;
     rec.lastSize = st.size;
 
+    // 回合进行中信号先于完成通知（探活环据此判定「忙碌」不误杀）。
+    if (turnStarts > 0) this.emitStart(rec, turnStarts);
+    if (approvalAsked > 0) this.emitApprovalAsked(rec);
     // 通知语义：会话出现 turn 事件后按 turn/end 计数，否则按 assistant/message 兜底。
     const count = rec.hasTurnEvents ? turnEnds : assistantMessages;
-    if (count > 0) this.emit(rec, count);
-    return count > 0 || consumed > readFrom;
+    if (count > 0) this.emit(rec, count, rec.hasTurnEvents);
+    return count > 0 || turnStarts > 0 || consumed > readFrom;
   }
 
-  emit(rec, count) {
+  emit(rec, count, turnBased) {
     const h = rec.header || {};
     if (h.delegationDepth > 0) return; // subagent logs are noise for toasts
     let title = 'DSH 任务完成';
@@ -385,9 +417,104 @@ class SessionWatcher {
     const shortId = typeof h.id === 'string' ? h.id.slice(-8) : null;
     body = [cwdBase, shortId ? '会话 ' + shortId : null].filter(Boolean).join(' · ');
     body += (count > 1 ? '（' + count + ' 轮任务完成）' : '');
-    try { this.onTurnEnd({ title, body, sessionId: h.id, cwd: h.cwd }); }
+    // turnBased=true 表示 count 是真实 turn/end 数（非 assistant/message 兜底），
+    // 供壳侧回合进行中计数精确减一（兜底路径不携带 count，见 CLI 段）。
+    try { this.onTurnEnd({ title, body, sessionId: h.id, cwd: h.cwd, count, turnBased: turnBased === true }); }
     catch (err) { this.log('watch', 'onTurnEnd 回调异常: ' + err.message); }
   }
+
+  /** 回合开始信号（探活环「忙碌」判定源）：顶层会话看到 turn/start 即上报。 */
+  emitStart(rec, count) {
+    const h = rec.header || {};
+    if (h.delegationDepth > 0) return; // subagent 不参与内核忙碌判定
+    try { this.onTurnStart({ sessionId: h.id, count }); }
+    catch (err) { this.log('watch', 'onTurnStart 回调异常: ' + err.message); }
+  }
+
+  /** 权限申请信号（顶层会话看到 approval/asked 即上报一次，供任务栏闪烁）。 */
+  emitApprovalAsked(rec) {
+    const h = rec.header || {};
+    if (h.delegationDepth > 0) return; // subagent 审批不打扰主窗
+    try { this.onApprovalAsked({ sessionId: h.id }); }
+    catch (err) { this.log('watch', 'onApprovalAsked 回调异常: ' + err.message); }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CLI 模式（Tauri 壳 C1，2026-08）：vendor node 直起，stdout 行协议（JSON
+// Lines）——Rust 侧 session_notify.rs 逐行消费。Electron 遗产路径
+// require('./session-watcher')（main.js:43）经 require.main 守卫零变化。
+//   用法：node session-watcher.js --sessions-dir <dir>
+// 协议：每个 turn-end 一行
+//   {"type":"turn-end","sessionId","title","body"}（日志走 stderr，与 sidecar
+//   同口径）。stdin 管道保活：父进程持有写端，退出（哪怕被强杀 → 管道断）
+//   即自退，防孤儿监视进程。
+// ---------------------------------------------------------------------------
+if (require.main === module) {
+  const os = require('node:os');
+  const argv = process.argv.slice(2);
+  let sessionsDir = path.join(os.homedir(), '.dsh', 'sessions');
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === '--sessions-dir') sessionsDir = argv[i + 1];
+  }
+  const watcher = new SessionWatcher({
+    sessionsDir,
+    log: function (tag, msg) {
+      try { process.stderr.write('[' + tag + '] ' + msg + '\n'); } catch {}
+    },
+    onTurnStart: function (info) {
+      try {
+        process.stdout.write(JSON.stringify({
+          type: 'turn-start',
+          sessionId: typeof info.sessionId === 'string' ? info.sessionId : null,
+          count: typeof info.count === 'number' && info.count > 0 ? info.count : 1,
+        }) + '\n');
+      } catch {
+        try { watcher.stop(); } catch {}
+        process.exit(0);
+      }
+    },
+    onTurnEnd: function (info) {
+      try {
+        const line = {
+          type: 'turn-end',
+          sessionId: typeof info.sessionId === 'string' ? info.sessionId : null,
+          title: typeof info.title === 'string' ? info.title : null,
+          body: typeof info.body === 'string' ? info.body : null,
+        };
+        // 真实 turn/end 才带 count（供壳侧回合进行中计数精确减）；assistant/message
+        // 兜底通知不携带，壳侧不减（避免旧会话兜底误消进行中的真实回合）。
+        if (info.turnBased === true) line.count = typeof info.count === 'number' && info.count > 0 ? info.count : 1;
+        process.stdout.write(JSON.stringify(line) + '\n');
+      } catch {
+        // stdout 已断（父进程退出中）：安静退出，不留孤儿。
+        try { watcher.stop(); } catch {}
+        process.exit(0);
+      }
+    },
+    onApprovalAsked: function (info) {
+      try {
+        process.stdout.write(JSON.stringify({
+          type: 'approval-asked',
+          sessionId: typeof info.sessionId === 'string' ? info.sessionId : null,
+        }) + '\n');
+      } catch {
+        try { watcher.stop(); } catch {}
+        process.exit(0);
+      }
+    },
+  });
+  watcher.start();
+  process.stdin.resume();
+  const bye = function () {
+    try { watcher.stop(); } catch {}
+    process.exit(0);
+  };
+  process.stdin.on('end', bye);
+  process.stdin.on('close', bye);
+  process.on('SIGTERM', bye);
+  process.on('SIGINT', bye);
+  process.on('exit', function () { try { watcher.stop(); } catch {} });
 }
 
 module.exports = { SessionWatcher, scanZstdFrames, expandRow };

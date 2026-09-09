@@ -6,8 +6,8 @@
 //      与共享实现一致；
 //   B. 二次同步零写入（全树 size+mtime 不变）；
 //   C. dry-run 零落盘；
-//   D. --with-patches：对临时伪造的 dsh 包应用运行时补丁（闪跳 + 白名单 +
-//      keyed slot 兼容），二次运行幂等；补丁内容与 main.js 共用同一变换；
+//   D. --with-patches：对临时伪造的 dsh 包应用运行时补丁（闪跳 + keyed slot
+//      兼容），二次运行幂等；补丁内容与 main.js 共用同一变换；
 //   E. 用户手写 disabled 条目被尊重（不重复 insert）。
 // 用法：node --test scripts/test/unit-sync-cli.test.js
 
@@ -21,7 +21,7 @@ const { spawnSync } = require('node:child_process');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const cli = path.join(repoRoot, 'scripts', 'sync-companion-plugins.js');
 const {
-  FLASH_OLD, FLASH_NEW, SETTINGS_NAMESPACES,
+  FLASH_OLD, FLASH_NEW,
   SLOT_KEY_COMPAT_OLD, SLOT_KEY_COMPAT_MARKER,
   SLOT_UNKEYED_COMPAT_OLD, SLOT_UNKEYED_COMPAT_MARKER,
 } = require('../lib/runtime-patches');
@@ -101,9 +101,11 @@ test('sync CLI: 空 DSH_HOME 首次同步落盘正确（包/条目/禁用块）'
   }
   // harness-pet 默认禁用块（bundle 校验通过才会写）
   assert.ok(patch.includes('- id: harness-pet\n  disabled: true'), 'harness-pet 默认禁用块应写入');
-  // billion-context-dsh 缺 dist 构建产物 → 不注册 → 不写 compaction-basic 禁用块
+  // billion-context-dsh 默认关闭：bundle 可装配 → 写 compaction-acp 自身禁用块，
+  // 且不再自动禁用 compaction-basic（内核默认压缩保留）；缺 dist → 两者都不写。
   const acpOk = fs.existsSync(path.join(repoRoot, 'assets', 'plugins', 'billion-context-dsh', 'dist', 'index.js'));
-  assert.strictEqual(patch.includes('compaction-basic'), acpOk, 'compaction-basic 禁用块只应在 ACP bundle 可装配时写入');
+  assert.strictEqual(patch.includes('- id: compaction-acp\n  disabled: true'), acpOk, 'compaction-acp 默认禁用块只应在 bundle 可装配时写入');
+  assert.ok(!patch.includes('- id: compaction-basic\n  disabled: true'), '不应再自动禁用 compaction-basic（内核默认压缩需保留）');
 });
 
 test('sync CLI: 二次同步零写入；dry-run 零落盘', (t) => {
@@ -119,40 +121,32 @@ test('sync CLI: 二次同步零写入；dry-run 零落盘', (t) => {
   assert.ok(!fs.existsSync(dryHome), 'dry-run 不得创建任何目录');
 });
 
-test('sync CLI: --with-patches 应用闪跳与白名单补丁且幂等', (t) => {
+test('sync CLI: --with-patches 应用闪跳与 slot 兼容补丁且幂等', (t) => {
   const home = tmpdir(t);
-  // 伪造官方包的「未打补丁」状态
-  const runtimeFile = path.join(home, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-client-runtime', 'lib', 'client.js');
+  // 0.1.2-alpha.1：dsh-client-runtime 分解为 dsh-api-session-controller，闪跳
+  // 修复（mergeOrderedBaseline 保留本地新会话）落点迁至 session-controller。
+  const runtimeFile = path.join(home, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-api-session-controller', 'lib', 'client.js');
   const slotsFile = path.join(home, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-client-ui-slots', 'lib', 'index.js');
   const runnerFile = path.join(home, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-cordis-client-runner', 'lib', 'client.js');
-  const exposeFile = path.join(home, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-host-apiproxy', 'lib', 'index.js');
   fs.mkdirSync(path.dirname(runtimeFile), { recursive: true });
   fs.mkdirSync(path.dirname(slotsFile), { recursive: true });
   fs.mkdirSync(path.dirname(runnerFile), { recursive: true });
-  fs.mkdirSync(path.dirname(exposeFile), { recursive: true });
   fs.writeFileSync(runtimeFile, `const x = ${JSON.stringify('prefix ' + FLASH_OLD + ' suffix')};\n`);
-  fs.writeFileSync(exposeFile, 'const WEB_SETTINGS_NAMESPACES = [\n\t"dsh-prompt"\n];\n');
   fs.writeFileSync(slotsFile, 'before\n' + SLOT_KEY_COMPAT_OLD + '\nafter\n');
   fs.writeFileSync(runnerFile, 'before\n' + SLOT_UNKEYED_COMPAT_OLD + '\nafter\n');
   runCli(t, home, ['--with-patches']);
   const runtime = fs.readFileSync(runtimeFile, 'utf8');
   assert.ok(runtime.includes(FLASH_NEW) && !runtime.includes(FLASH_OLD), '闪跳修复应落盘');
-  const expose = fs.readFileSync(exposeFile, 'utf8');
-  for (const ns of SETTINGS_NAMESPACES) {
-    assert.ok(expose.includes('"' + ns + '"'), '白名单应包含 ' + ns);
-  }
   const slots = fs.readFileSync(slotsFile, 'utf8');
   assert.ok(slots.includes(SLOT_KEY_COMPAT_MARKER) && slots.includes('options = { ...options, key: options.id };'), 'keyed slot 旧 id 兼容补丁应落盘');
   const runner = fs.readFileSync(runnerFile, 'utf8');
   assert.ok(runner.includes(SLOT_UNKEYED_COMPAT_MARKER) && runner.includes('env.pkg.pluginId || env.pkg.packageId'), 'keyed slot 无 key 兼容补丁应落盘');
   // 幂等：二次运行字节级不变
   const r1 = fs.readFileSync(runtimeFile);
-  const e1 = fs.readFileSync(exposeFile);
   const s1 = fs.readFileSync(slotsFile);
   const u1 = fs.readFileSync(runnerFile);
   runCli(t, home, ['--with-patches']);
   assert.deepStrictEqual(fs.readFileSync(runtimeFile), r1, '闪跳补丁二次运行不得改写');
-  assert.deepStrictEqual(fs.readFileSync(exposeFile), e1, '白名单补丁二次运行不得改写');
   assert.deepStrictEqual(fs.readFileSync(slotsFile), s1, 'keyed slot 旧 id 兼容补丁二次运行不得改写');
   assert.deepStrictEqual(fs.readFileSync(runnerFile), u1, 'keyed slot 无 key 兼容补丁二次运行不得改写');
 });

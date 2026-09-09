@@ -7,15 +7,20 @@
  * so this component never fetches or dispatches — it only edits.
  *
  * The toolbar (mode toggle / dirty dot / save / status) renders as its own
- * row below the host's title bar, VSCode-style.
+ * row below the host's title bar, VSCode-style — unless the host passes
+ * `toolbar: 'host'` (the merged editor-explorer mode), in which case this
+ * component skips the row and reports state + registers commands through
+ * the FileViewerProps toolbar callbacks so the host's path-input header
+ * renders the controls instead.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ComponentType } from 'react'
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'
-import { EditorState } from '@codemirror/state'
-import { EditorView as CodeMirrorView, keymap, lineNumbers } from '@codemirror/view'
+import { EditorState, RangeSet, StateEffect, StateField, type Text } from '@codemirror/state'
+import { Decoration, EditorView as CodeMirrorView, keymap, lineNumbers } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { IconCheckOutline16, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCheckOutline16, MarkdownText, type MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api, htmlUrl } from './api.ts'
 import { languageForPath } from './lang.ts'
 import { cmSurfaceTheme, CmThemeCompartment } from './cm-themes.ts'
@@ -23,8 +28,12 @@ import { isDarkScheme, subscribeColorScheme } from './theme.ts'
 import { SandboxStatusBar } from './SandboxStatusBar.tsx'
 import { appendToDraft } from './conversation-draft.ts'
 import { buildSelectionInsert, linesOfSelection } from './selection-payload.ts'
+import { lazyChunkComponent } from './lazy-chunk.tsx'
+import { splitMermaidBlocks, type MermaidMarkdownProps } from './mermaid-blocks.ts'
 import { t } from './locales.ts'
-import type { FileViewerProps } from './service.ts'
+import { ensureDiffHighlightCss, highlightKindClass, readFileChangesStore, readFileHighlight } from './file-changes-highlight.ts'
+import { editorFeatures } from './editor-features.ts'
+import type { EditorToolbarState, FileViewerProps } from './service.ts'
 import css from './sidebar.module.css'
 
 /** Previewable files (rendered output vs source editing). */
@@ -38,6 +47,23 @@ interface SelectionPopup {
 }
 
 /**
+ * The chunk-resident markdown preview renderer (mermaid lazy chunk): one
+ * MarkdownText pass over the whole source, with rendered mermaid fences
+ * swapped for diagrams. Module-level `pick` keeps the load effect stable.
+ */
+const LazyMermaidMarkdown = lazyChunkComponent<MermaidMarkdownProps>(
+  'mermaid',
+  (mod) => mod.MermaidMarkdown as ComponentType<MermaidMarkdownProps> | undefined,
+  // Fallback for when the mermaid chunk cannot load (kernel restart window,
+  // network blip, a missing module-table row after an overlay install): render
+  // the SAME source through the plain MarkdownText — mermaid fences degrade to
+  // code blocks instead of leaving the whole preview stuck on an error strip.
+  // Mirrors the editor chunk's TextFallback; the content is already in props,
+  // so a mermaid-bearing file stays exactly as viewable as a plain one.
+  (props) => <MarkdownText text={props.text} labels={props.labels} />,
+)
+
+/**
  * The sandbox tokens of the HTML preview iframe. NO allow-same-origin (the
  * preview must stay in an opaque origin — with the route's own origin it
  * could read session data) and NO allow-top-navigation (a previewed page
@@ -45,6 +71,40 @@ interface SelectionPopup {
  * in the side card settings (warned); the toggle below reflects it.
  */
 export const HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-downloads allow-modals'
+
+/**
+ * Inline agent-diff decorations (K28): a per-editor StateField holding the
+ * line decorations for the current file's agent-changed lines. The field is
+ * defined once and shared across editor instances; each instance pushes a
+ * fresh RangeSet via DiffHighlightEffect when its file's highlight changes.
+ */
+const DiffHighlightEffect = StateEffect.define<RangeSet<Decoration>>()
+const diffHighlightField = StateField.define<RangeSet<Decoration>>({
+  create: () => Decoration.none,
+  update: (value, tr) => {
+    let next = value
+    for (const effect of tr.effects) {
+      if (effect.is(DiffHighlightEffect)) next = effect.value
+    }
+    return next
+  },
+  provide: (field) => CodeMirrorView.decorations.from(field),
+})
+
+/** Build line decorations from per-line kinds (aligned one-to-one with doc lines). */
+function buildDiffDecorations(doc: Text, kinds: ReadonlyArray<'ctx' | 'add' | 'mod'>): RangeSet<Decoration> {
+  const ranges: Array<{ from: number; to: number; value: Decoration }> = []
+  // Clamp to the doc's actual line count: if the file changed after the agent's
+  // last write, kinds may be longer/shorter than the live doc — never throw.
+  const limit = Math.min(kinds.length, doc.lines)
+  for (let i = 0; i < limit; i++) {
+    const kind = kinds[i]
+    if (kind !== 'add' && kind !== 'mod') continue
+    const line = doc.line(i + 1)
+    ranges.push(Decoration.line({ class: highlightKindClass(kind) }).range(line.from))
+  }
+  return RangeSet.of(ranges, true)
+}
 
 export function TextEditor(props: FileViewerProps) {
   const { ctx, scope, path, viewerId, content, truncated } = props
@@ -66,6 +126,9 @@ export function TextEditor(props: FileViewerProps) {
   const popupRef = useRef<SelectionPopup | null>(null)
   /** The markdown preview container (selection-containment + line lookup). */
   const mdRef = useRef<HTMLDivElement>(null)
+  /** Inline agent-diff highlight: enabled flag + whether this file has changes. */
+  const [diffHighlight, setDiffHighlight] = useState(true)
+  const [hasDiff, setHasDiff] = useState(false)
 
   const hidePopup = (): void => {
     popupRef.current = null
@@ -121,9 +184,13 @@ export function TextEditor(props: FileViewerProps) {
         CodeMirrorView.lineWrapping,
         lineNumbers(),
         history(),
+        // Bracket matching + folding + find & replace (side-ed). Before the
+        // keymap so Mod-f / F3 / Escape win over the default bindings.
+        editorFeatures(),
         EditorState.tabSize.of(2),
         CodeMirrorView.contentAttributes.of({ spellcheck: 'false' }),
         cmSurfaceTheme,
+        diffHighlightField,
         themeComp.of(dark),
         ...(language !== null ? [language] : []),
         CodeMirrorView.updateListener.of((update) => {
@@ -141,11 +208,11 @@ export function TextEditor(props: FileViewerProps) {
           ...defaultKeymap,
           ...historyKeymap,
         ]),
-        // Selection popup (the catch-all code viewer only): a non-empty
+        // Selection popup (the code and markdown editors): a non-empty
         // selection anchors the floating "add to conversation" button above
         // its head. Scrolling (geometry/viewport change) or losing focus
         // hides it; typing collapses the selection and hides it too.
-        ...(viewerId === 'code' ? [
+        ...(viewerId === 'code' || viewerId === 'markdown' ? [
           CodeMirrorView.updateListener.of((update) => {
             if (update.geometryChanged || update.viewportChanged) {
               hidePopup()
@@ -198,6 +265,25 @@ export function TextEditor(props: FileViewerProps) {
     // effect below (recreating the view here would drop the draft).
   }, [content, path])
 
+  // Inline agent-diff highlight (K28): read the shared window store published
+  // by dsh-client-file-changes and tint the add/mod lines of the current file.
+  // Without that plugin this is a no-op — the editor renders exactly as before.
+  useEffect(() => {
+    ensureDiffHighlightCss()
+    const store = readFileChangesStore()
+    const applyHighlight = (): void => {
+      const view = viewRef.current
+      const hl = diffHighlight ? readFileHighlight(scope.sessionId, path) : null
+      const kinds = hl !== null && hl.kinds !== undefined && hl.kinds.length > 0 ? hl.kinds : []
+      setHasDiff(hl !== null)
+      if (view === null) return
+      const deco = kinds.length > 0 ? buildDiffDecorations(view.state.doc, kinds) : Decoration.none
+      view.dispatch({ effects: DiffHighlightEffect.of(deco) })
+    }
+    applyHighlight()
+    return store === null ? undefined : store.subscribe(applyHighlight)
+  }, [content, path, scope.sessionId, diffHighlight])
+
   // Scheme flip: re-theme in place (the compartment holds only the
   // scheme-dependent extensions; everything else is untouched).
   useEffect(() => {
@@ -233,6 +319,26 @@ export function TextEditor(props: FileViewerProps) {
 
   const markdown = viewerId === 'markdown'
   const html = viewerId === 'html'
+  /** The markdown source the preview renders (draft wins over saved content). */
+  const mdText = draft ?? content ?? ''
+  /** md/mermaid block split for the preview (mermaid fences lift out). Split
+   *  only in preview mode: edit-mode keystrokes must not re-scan the source. */
+  const mdBlocks = useMemo(
+    () => (markdown && mode === 'preview' ? splitMermaidBlocks(mdText) : []),
+    [markdown, mode, mdText],
+  )
+  const hasMermaid = useMemo(
+    () => mdBlocks.some(block => block.kind === 'mermaid'),
+    [mdBlocks],
+  )
+  // The DSH MarkdownText takes ONE required `labels` object (fence copy
+  // labels + the footnotes heading). It reads `labels.code.*` for every ```
+  // fence and `labels.footnotes` for a footnote section, so a missing/partial
+  // labels crashes the preview (undefined.code) for exactly the md files that
+  // carry a code fence or footnote. Build the full object from this plugin's
+  // own dictionary (the primitives are cordis-free and would otherwise fall
+  // back to hardcoded copy). Render-time t() follows live locale switches.
+  const mdLabels: MarkdownLabels = { code: { copyLabel: t('copy'), copiedLabel: t('copied') }, footnotes: t('footnotes') }
 
   /**
    * Selection popup for the markdown preview: a mouse-up inside the preview
@@ -259,7 +365,7 @@ export function TextEditor(props: FileViewerProps) {
       return
     }
     const rect = sel.getRangeAt(0).getBoundingClientRect()
-    const lines = linesOfSelection(draft ?? content ?? '', text)
+    const lines = linesOfSelection(mdText, text)
     showPopup(
       buildSelectionInsert(path, scope.cwd, lines ?? undefined, text),
       rect.left + rect.width / 2,
@@ -278,8 +384,31 @@ export function TextEditor(props: FileViewerProps) {
   const [localUnlock, setLocalUnlock] = useState(() => props.store?.getPrefs().htmlViewerDefaultUnsafe === true)
   const htmlNoSandbox = props.store?.getPrefs().htmlViewerNoSandbox === true || localUnlock
 
+  // Host-toolbar mode (the merged editor header renders the controls): skip
+  // the own toolbar row, report the state after every relevant render (the
+  // JSON key guards redundant calls), and register the commands on mount.
+  const hostToolbar = props.toolbar === 'host'
+  const lastToolbarRef = useRef('')
+  useEffect(() => {
+    if (!hostToolbar) return
+    const state: EditorToolbarState = { modes: markdown || html, mode, dirty, editable, saveState }
+    const key = JSON.stringify(state)
+    if (lastToolbarRef.current === key) return
+    lastToolbarRef.current = key
+    props.onToolbarState?.(state)
+  })
+  useEffect(() => {
+    if (!hostToolbar) return
+    // `save` reads live refs only, and `setMode` is the stable state setter —
+    // registering this render's closures is safe for the mount's lifetime.
+    props.onToolbarControls?.({ setMode, save })
+    return () => { props.onToolbarControls?.(null) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostToolbar])
+
   return (
     <>
+      {!hostToolbar && (
       <div className={css.editorHeader}>
         {(markdown || html) && (
           <div className={css.editorModeToggle}>
@@ -311,8 +440,21 @@ export function TextEditor(props: FileViewerProps) {
             <IconCheckOutline16 />
           </button>
         )}
+        {hasDiff && (
+          <button
+            type="button"
+            className={css.iconButton}
+            aria-label="diff highlight"
+            title={diffHighlight ? '关闭 diff 高亮' : '开启 diff 高亮'}
+            aria-pressed={diffHighlight}
+            onClick={() => { setDiffHighlight(value => !value) }}
+          >
+            <span style={{ opacity: diffHighlight ? 1 : 0.4 }}>±</span>
+          </button>
+        )}
         {saveLabel !== '' && <span className={clsx(css.editorStatus, saveState === 'failed' && css.editorStatusError)}>{saveLabel}</span>}
       </div>
+      )}
       {editable && (
         <>
           {truncated === true && mode === 'edit' && <div className={css.editorBanner}>{t('truncation')}</div>}
@@ -333,11 +475,13 @@ export function TextEditor(props: FileViewerProps) {
               dictionary: the DSH MarkdownText/CodeBlock are cordis-free and
               fall back to hardcoded Chinese otherwise (same pattern as the
               chat's AssistantMarkdown). Render-time t() keeps them following
-              the active locale on live switches. */}
-          <MarkdownText
-            text={draft ?? content ?? ''}
-            codeLabels={{ copyLabel: t('copy'), copiedLabel: t('copied') }}
-          />
+              the active locale on live switches. Mermaid fences hand the
+              whole document to the mermaid lazy chunk (single markdown
+              parse; cross-fence references/footnotes stay intact); files
+              without one render exactly as before. */}
+          {hasMermaid
+            ? <LazyMermaidMarkdown text={mdText} labels={mdLabels} />
+            : <MarkdownText text={mdText} labels={mdLabels} />}
         </div>
       )}
       {html && mode === 'preview' && (

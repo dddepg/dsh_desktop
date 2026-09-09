@@ -1,0 +1,315 @@
+{
+  "generatedAt": "2026-09-05T12:10:49.437Z",
+  "kernelRoot": "@deepseek-ai",
+  "markerCount": 63,
+  "surface": [
+    {
+      "file": "dsh-agent-loop/lib/index.js",
+      "sha256": "5d0aa522a2d8ae22",
+      "markers": [
+        "cross-copy scheduler lookup guard",
+        "synthesize empty tool-call ids"
+      ]
+    },
+    {
+      "file": "dsh-agent-presets/lib/index.js",
+      "sha256": "46de2fd35712b452",
+      "markers": [
+        "agent-preset-fallback"
+      ]
+    },
+    {
+      "file": "dsh-agent-presets/lib/invariant.js",
+      "sha256": "8cf3a18ad246de9a",
+      "markers": [
+        "agent-preset-fallback"
+      ]
+    },
+    {
+      "file": "dsh-api-gateway/lib/client.js",
+      "sha256": "b5f6c6b5160e8550",
+      "markers": [
+        "continue history past seq gap"
+      ]
+    },
+    {
+      "file": "dsh-api-remotes/lib/client.js",
+      "sha256": "35c1285a31e08130",
+      "markers": [
+        "session manage"
+      ]
+    },
+    {
+      "file": "dsh-api-session-controller/lib/client.js",
+      "sha256": "9d8c8b7c0ab7be49",
+      "markers": [
+        "larger history page"
+      ]
+    },
+    {
+      "file": "dsh-api-session-controller/lib/index.js",
+      "sha256": "ad7867710cf1aabd",
+      "markers": [
+        "larger history page",
+        "read the resolved HOST-side value",
+        "read the resolved HOST-side value (settings.get), not the"
+      ]
+    },
+    {
+      "file": "dsh-api-settings-controller/lib/index.js",
+      "sha256": "7808db19d80c395c",
+      "markers": [
+        "credentials-absent guidance"
+      ]
+    },
+    {
+      "file": "dsh-api-workspace-controller/lib/client.js",
+      "sha256": "4ada4a0e78fcabbb",
+      "markers": [
+        "session manage"
+      ]
+    },
+    {
+      "file": "dsh-api-workspace-controller/lib/index.js",
+      "sha256": "f8ab38e1a52111c1",
+      "markers": [
+        "session manage",
+        "session orphans"
+      ]
+    },
+    {
+      "file": "dsh-api-workspace-controller/lib/typert.host.js",
+      "sha256": "aef726b5220e3db7",
+      "markers": [
+        "session manage"
+      ]
+    },
+    {
+      "file": "dsh-atomic-write/lib/index.js",
+      "sha256": "e58b847d61f9dc66",
+      "markers": [
+        "orphan lock recovery"
+      ]
+    },
+    {
+      "file": "dsh-attachment-local/lib/index.js",
+      "sha256": "def04067735e574f",
+      "markers": [
+        "trust decoded image bytes"
+      ]
+    },
+    {
+      "file": "dsh-client-modules/lib/client.js",
+      "sha256": "72f7493fe464b0f6",
+      "markers": [
+        "bundle script transient-fetch retry"
+      ]
+    },
+    {
+      "file": "dsh-client-ui-chat/lib/client.js",
+      "sha256": "f87072ad0b0b22f2",
+      "markers": [
+        "auto-load older via top sentinel"
+      ]
+    },
+    {
+      "file": "dsh-client-ui-conversation/lib/client.js",
+      "sha256": "cfbd0b310ae453c5",
+      "markers": [
+        "recover swallowed conversation assembly fault",
+        "workspace chip keeps cwd label across projection gap"
+      ]
+    },
+    {
+      "file": "dsh-client-ui-primitives/lib/index.js",
+      "sha256": "ed4e0281b1c9e04f",
+      "markers": [
+        "issue #36"
+      ]
+    },
+    {
+      "file": "dsh-client-ui-settings-models/lib/client.js",
+      "sha256": "1cae83fbddb10249",
+      "markers": [
+        "model image-input adopt",
+        "model image-input checkbox",
+        "model image-input locale",
+        "settings-conflict retry",
+        "settings-models namespace heal"
+      ]
+    },
+    {
+      "file": "dsh-client-ui-settings-plugins/lib/client.js",
+      "sha256": "09dee050369a3abc",
+      "markers": [
+        "hide inventory tab",
+        "issue #20"
+      ]
+    },
+    {
+      "file": "dsh-client-ui-slots/lib/index.js",
+      "sha256": "c2e49a8eea28b226",
+      "markers": [
+        "accept legacy keyed-slot id as key",
+        "isolate keyed-slot registration errors"
+      ]
+    },
+    {
+      "file": "dsh-client-ui-workspace/lib/client.js",
+      "sha256": "642f987f5b8b2960",
+      "markers": [
+        "manual sort drag sync",
+        "open project dir",
+        "session manage"
+      ]
+    },
+    {
+      "file": "dsh-cordis-client-runner/lib/client.js",
+      "sha256": "2406afee3b1a481e",
+      "markers": [
+        "derive keyed slot key for unkeyed registrations"
+      ]
+    },
+    {
+      "file": "dsh-credentials-local/lib/index.js",
+      "sha256": "28df289ed678eeeb",
+      "markers": [
+        "transient initial credentials read retries"
+      ]
+    },
+    {
+      "file": "dsh-host-directory-picker-auto/lib/index.js",
+      "sha256": "16cb89718c232202",
+      "markers": [
+        "WSL picker must browse, not zenity into WSLg"
+      ]
+    },
+    {
+      "file": "dsh-llm-deepseek/lib/index.js",
+      "sha256": "adb3bca0a013d495",
+      "markers": [
+        "device-auth guidance",
+        "ds tool schema sanitize"
+      ]
+    },
+    {
+      "file": "dsh-llm-pi-ai/lib/index.js",
+      "sha256": "c233ea9f6ed0cacb",
+      "markers": [
+        "hand-declared reasoning defaults"
+      ]
+    },
+    {
+      "file": "dsh-llm/lib/index.js",
+      "sha256": "6941eb324dfd69dd",
+      "markers": [
+        "adapter prepareCall guard",
+        "contentHasImage non-array guard"
+      ]
+    },
+    {
+      "file": "dsh-session-persistence-jsonl/lib/index.js",
+      "sha256": "86d63cc05213d13e",
+      "markers": [
+        "degrade session load to last complete frame",
+        "recover complete zstd frame torn JSONL tail",
+        "session header scan cache + bounded read"
+      ]
+    },
+    {
+      "file": "dsh-session/lib/index.js",
+      "sha256": "113fb809821615d6",
+      "markers": [
+        "session manage",
+        "tolerate empty tool source"
+      ]
+    },
+    {
+      "file": "dsh-skill-filesystem/lib/index.js",
+      "sha256": "ed4c34c5eef96bc3",
+      "markers": [
+        "skill-dirs-compat"
+      ]
+    },
+    {
+      "file": "dsh-subagent-claude-code/lib/index.js",
+      "sha256": "1ab2d80216e04692",
+      "markers": [
+        "claude-local-bin-fallback"
+      ]
+    },
+    {
+      "file": "dsh-system-prompt/lib/index.js",
+      "sha256": "6a5b1f9e830c58e0",
+      "markers": [
+        "prompt-context-literal"
+      ]
+    },
+    {
+      "file": "dsh-terminal-bash/lib/index.js",
+      "sha256": "b750362a0d5728b3",
+      "markers": [
+        "interrupt escalation"
+      ]
+    },
+    {
+      "file": "dsh-token-meter/lib/index.js",
+      "sha256": "5ee14db4f0e0b972",
+      "markers": [
+        "bump contextBreakdown stateVersion",
+        "clamp token-meter messageTokens"
+      ]
+    },
+    {
+      "file": "dsh-tool-bash-persistent/lib/index.js",
+      "sha256": "88776f479af86009",
+      "markers": [
+        "race the persistent send against tool abort"
+      ]
+    },
+    {
+      "file": "dsh-tool-bash/lib/index.js",
+      "sha256": "72a3cf70eedeeeb0",
+      "markers": [
+        "optional shell description"
+      ]
+    },
+    {
+      "file": "dsh-tool-pwsh-persistent/lib/index.js",
+      "sha256": "b22e287db13a7fab",
+      "markers": [
+        "race the persistent send against tool abort"
+      ]
+    },
+    {
+      "file": "dsh-tool-pwsh/lib/index.js",
+      "sha256": "cd77b41ed8d32009",
+      "markers": [
+        "optional shell description"
+      ]
+    },
+    {
+      "file": "dsh-tools/lib/index.js",
+      "sha256": "1b8c5f9a647e37ed",
+      "markers": [
+        "contentHasImage non-array guard",
+        "global-symbol scheduler mirror",
+        "optional run_code description"
+      ]
+    },
+    {
+      "file": "dsh-web-search-deepseek/lib/index.js",
+      "sha256": "d26e37a6893fcc0c",
+      "markers": [
+        "issue #20"
+      ]
+    },
+    {
+      "file": "dsh-workspace/lib/index.js",
+      "sha256": "bda8aa234d7e0566",
+      "markers": [
+        "session manage"
+      ]
+    }
+  ]
+}

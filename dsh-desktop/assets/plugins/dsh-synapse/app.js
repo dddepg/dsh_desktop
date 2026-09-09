@@ -2,6 +2,7 @@ const app = document.querySelector('#app')
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
 const LEGACY_CARD_POSITIONS_KEY = 'dsh-synapse:card-positions'
 const CARD_POSITIONS_KEY = 'dsh-synapse:card-positions:v3'
+const COLLAPSED_CARDS_KEY = 'dsh-synapse:collapsed-cards:v1'
 const savedBranchAnchors = (() => {
   try {
     const value = JSON.parse(localStorage.getItem('dsh-synapse:branch-anchors') ?? '[]')
@@ -17,6 +18,12 @@ const savedCardPositions = (() => {
     return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && item[1] !== null && Number.isFinite(item[1].x) && Number.isFinite(item[1].y)) : []
   } catch { return [] }
 })()
+const savedCollapsedCards = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem(COLLAPSED_CARDS_KEY) ?? '[]')
+    return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []
+  } catch { return [] }
+})()
 const CARD_WIDTH = 310
 const CARD_HEIGHT = 276
 const CARD_GAP_Y = 42
@@ -24,12 +31,23 @@ const CAMERA_INSET_X = 56
 const CAMERA_INSET_Y = 56
 const state = {
   summaries: [], workspace: null, activeId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false,
-  dshWorkspaces: [], selectedDshWorkspaceId: null,
+  dshWorkspaces: [], selectedDshWorkspaceId: null, dshWorkspacesSignature: '',
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
-  draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions),
-  dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 },
+  draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards),
+  dragging: false, canvasGesture: false, canvasRefreshAfter: 0, detailRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 },
   expandedMessageIds: new Set(),
 }
+
+// M4 on-demand activation: false until the host opens the canvas view. While
+// false the app is fully silent — zero fetch, zero postMessage, zero
+// projection poll, zero event-driven render — so a closed canvas never costs
+// the main conversation anything.
+let viewActive = false
+let projectionPollTimer = 0
+// Handle of the pending map-ready handshake frame (cancelled when the view
+// closes before the handshake completes, so a late map-ready can never
+// resurrect an overlay the user already closed).
+let mapReadyFrame = 0
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]))
 const formatTime = value => new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -43,6 +61,10 @@ function rememberBranchAnchor(sessionId, cardId) {
 
 function persistCardPositions() {
   try { localStorage.setItem(CARD_POSITIONS_KEY, JSON.stringify([...state.cardPositions])) } catch { /* Private browsing may disable local storage. */ }
+}
+
+function persistCollapsedCards() {
+  try { localStorage.setItem(COLLAPSED_CARDS_KEY, JSON.stringify([...state.collapsedCardIds])) } catch { /* Private browsing may disable local storage. */ }
 }
 
 function rememberCardPosition(cardId, position, aliases = []) {
@@ -114,11 +136,180 @@ function messagesFromEvents(events) {
 async function loadThreadHistory() {}
 
 function canReplaceView() {
-  return state.draft === null && !state.dragging && !state.canvasGesture && Date.now() >= state.canvasRefreshAfter && !document.activeElement?.matches('textarea')
+  return state.draft === null && !state.dragging && !state.canvasGesture && Date.now() >= state.canvasRefreshAfter && !shouldDeferDetailRender(state, Date.now()) && !document.activeElement?.matches('textarea')
 }
 
 function deferCanvasRefresh(delay = 700) {
   state.canvasRefreshAfter = Math.max(state.canvasRefreshAfter, Date.now() + delay)
+}
+
+// Detail-view scroll decisions live in pure helpers (time and storage are
+// injected) so the gating logic is unit-testable without a DOM or kernel.
+// The impure wiring sits directly below them.
+function shouldDeferDetailRender(state, now, urgent = false) {
+  // Event-driven renders wait while the user scrolls the detail view.
+  // Urgent events — a pending reply settling — must never be dropped, so
+  // they bypass the gate entirely.
+  if (urgent) return false
+  return state.mode === 'thread' && Number.isFinite(state.detailRefreshAfter) && now < state.detailRefreshAfter
+}
+
+function computeRestoreScroll(saved, container) {
+  // Clamp the remembered offset against what the container can currently
+  // show. Right after a render or reload the content may still be shorter
+  // than its final height (images, code blocks), so the pin retries as the
+  // layout grows instead of silently dropping the position.
+  const top = saved?.top
+  if (typeof top !== 'number' || !Number.isFinite(top) || top < 0) return null
+  const scrollHeight = Number.isFinite(container?.scrollHeight) ? container.scrollHeight : 0
+  const clientHeight = Number.isFinite(container?.clientHeight) ? container.clientHeight : 0
+  return Math.min(top, Math.max(0, scrollHeight - clientHeight))
+}
+
+function nextDetailScrollTop(remembered, element, lastProgrammaticTop) {
+  // Decide the authoritative offset from a scroll event or a pre-render sync:
+  // a value we programmatically put there — possibly a clamp hit while the
+  // content was still short — is not a user scroll and must not overwrite the
+  // remembered position. Any different value is a genuine user scroll.
+  if (typeof lastProgrammaticTop === 'number' && element.scrollTop === lastProgrammaticTop) return remembered
+  return element.scrollTop
+}
+
+function readDetailScroll(storage, threadId) {
+  if (storage === null || storage === undefined || typeof threadId !== 'string') return null
+  try {
+    const value = JSON.parse(storage.getItem(`dsh-synapse:detail-scroll:v1:${threadId}`))
+    return typeof value?.top === 'number' && Number.isFinite(value.top) && value.top >= 0 ? { top: value.top } : null
+  } catch { return null }
+}
+
+function writeDetailScroll(storage, threadId, top) {
+  if (storage === null || storage === undefined || typeof threadId !== 'string') return
+  if (typeof top !== 'number' || !Number.isFinite(top) || top < 0) return
+  try { storage.setItem(`dsh-synapse:detail-scroll:v1:${threadId}`, JSON.stringify({ top: Math.round(top) })) } catch { /* Quota exceeded or storage disabled. */ }
+}
+
+function forgetDetailScroll(storage, threadId) {
+  if (storage === null || storage === undefined || typeof threadId !== 'string') return
+  try { storage.removeItem(`dsh-synapse:detail-scroll:v1:${threadId}`) } catch { /* Storage may be disabled. */ }
+}
+
+function readPersistedDetailView(storage) {
+  if (storage === null || storage === undefined) return null
+  try {
+    const value = JSON.parse(storage.getItem('dsh-synapse:detail-view:v1'))
+    if (value?.mode !== 'thread' || typeof value.activeId !== 'string') return null
+    return { mode: 'thread', activeId: value.activeId }
+  } catch { return null }
+}
+
+function writePersistedDetailView(storage, view) {
+  if (storage === null || storage === undefined) return
+  try { storage.setItem('dsh-synapse:detail-view:v1', JSON.stringify(view)) } catch { /* Storage may be full or disabled. */ }
+}
+
+function clearPersistedDetailView(storage) {
+  if (storage === null || storage === undefined) return
+  try { storage.removeItem('dsh-synapse:detail-view:v1') } catch { /* Storage may be disabled. */ }
+}
+
+let detailRefreshTimer = 0
+function deferDetailRefresh(delay = 700) {
+  state.detailRefreshAfter = Math.max(state.detailRefreshAfter, Date.now() + delay)
+  if (detailRefreshTimer !== 0) window.clearTimeout(detailRefreshTimer)
+  // Catch-up render once the user stops scrolling: deferred event renders
+  // are only delayed, never lost.
+  detailRefreshTimer = window.setTimeout(() => {
+    detailRefreshTimer = 0
+    if (state.mode === 'thread' && canReplaceView()) renderPreservingDetailScroll()
+  }, Math.max(0, state.detailRefreshAfter - Date.now()))
+}
+
+function safeSessionStorage() {
+  try { return sessionStorage } catch { return null }
+}
+
+// Authoritative detail scroll. render() replaces the whole DOM subtree, so a
+// fresh .detail-scroll element always starts at scrollTop 0 and its value is
+// only trusted when no restore is still in flight — otherwise an event
+// flood between two renders would read 0 and lose the user's position.
+const detailScroll = { threadId: null, top: 0 }
+let detailPinPending = false
+let detailPinGeneration = 0
+let detailLastProgrammaticTop = null
+let detailScrollObserver = null
+let detailScrollTimer = 0
+const DETAIL_SCROLL_PIN_WINDOW = 300
+
+function syncDetailScrollFromElement(element) {
+  if (detailPinPending) return
+  if (!(element instanceof HTMLElement) || element.dataset.threadId !== detailScroll.threadId) return
+  // Same echo rule as the scroll listener: a value we programmatically put
+  // there (possibly a clamp while content is short) is not a user scroll.
+  const top = nextDetailScrollTop(detailScroll.top, element, detailLastProgrammaticTop)
+  if (top === detailScroll.top) return
+  detailScroll.top = top
+  writeDetailScroll(safeSessionStorage(), detailScroll.threadId, top)
+}
+
+function applyDetailScroll(container) {
+  if (container.dataset.threadId !== detailScroll.threadId) return
+  const next = computeRestoreScroll({ top: detailScroll.top }, container)
+  if (next === null || container.scrollTop === next) return
+  detailLastProgrammaticTop = next
+  container.scrollTop = next
+}
+
+function stopDetailScrollPin() {
+  if (detailScrollTimer !== 0) { window.clearTimeout(detailScrollTimer); detailScrollTimer = 0 }
+  detailScrollObserver?.disconnect()
+  detailScrollObserver = null
+  detailPinPending = false
+}
+
+function pinDetailScroll() {
+  const container = document.querySelector('.detail-scroll')
+  if (!(container instanceof HTMLElement)) return
+  if (detailScroll.threadId !== container.dataset.threadId) {
+    const saved = readDetailScroll(safeSessionStorage(), container.dataset.threadId)
+    detailScroll.threadId = container.dataset.threadId
+    detailScroll.top = saved?.top ?? 0
+  }
+  const generation = ++detailPinGeneration
+  stopDetailScrollPin()
+  detailPinPending = true
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      if (generation !== detailPinGeneration) return
+      const current = document.querySelector('.detail-scroll')
+      if (current !== container || !container.isConnected) { stopDetailScrollPin(); return }
+      applyDetailScroll(container)
+      detailPinPending = false
+      if (typeof ResizeObserver === 'undefined') return
+      // Content can keep growing after the first two frames (images and
+      // code blocks finishing their layout); keep re-pinning on layout
+      // shifts until the pin window closes.
+      detailScrollObserver = new ResizeObserver(() => applyDetailScroll(container))
+      detailScrollObserver.observe(container)
+      for (const child of container.children) detailScrollObserver.observe(child)
+      detailScrollTimer = window.setTimeout(stopDetailScrollPin, DETAIL_SCROLL_PIN_WINDOW)
+    })
+  })
+}
+
+// Survives iframe reloads (kernel restarts reload the host page and with it
+// this frame): the first map open after boot returns to the conversation the
+// user was reading, at the persisted scroll offset.
+let persistedDetailView = null
+function restorePersistedDetailView() {
+  if (persistedDetailView === null || state.workspace === null) return
+  const view = persistedDetailView
+  persistedDetailView = null
+  const thread = state.workspace.threads.find(item => item.id === view.activeId)
+  if (thread === undefined) return
+  state.activeId = thread.id
+  state.mode = 'thread'
+  render()
 }
 
 function currentDshWorkspace() {
@@ -140,6 +331,15 @@ function workspaceChoices() {
   return state.summaries.map(workspace => ({ id: workspace.id, title: workspace.title, path: workspace.cwd, sessionIds: [], source: 'projection' }))
 }
 
+// Structural fingerprint of a DSH workspace list push: identity, title, path
+// and member sessions. Equal fingerprints mean the reload would produce an
+// identical canvas, so the reload (fetch + full render) is skipped.
+function dshWorkspacesSignature(workspaces) {
+  return workspaces
+    .map(workspace => `${workspace.id}|${workspace.title}|${workspace.path ?? ''}|${workspace.sessionIds.join(',')}`)
+    .join(';')
+}
+
 async function threadsForDshWorkspace(workspace) {
   if (workspace.sessionIds.length === 0) return []
   const requested = new Set(workspace.sessionIds)
@@ -159,9 +359,13 @@ async function openDshWorkspace(id, { renderAfter = true } = {}) {
   state.workspace = { id: nextWorkspaceId, title: workspace.title, cwd: workspace.path, threads }
   const currentThread = currentDshThread(state.workspace.threads)
   state.activeId = currentThread?.id ?? (state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null)
+  if (currentThread !== undefined) revealConversationThread(conversationCards(state.workspace.threads), currentThread.id)
   if (renderAfter && canReplaceView()) render()
   await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
-  if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
+  // History loads are event-driven (poll/push paths come here too), so the
+  // trailing render coalesces into the frame scheduler instead of stacking
+  // a second full DOM rebuild right after the first.
+  if (renderAfter && load === state.workspaceLoad && canReplaceView()) scheduleRender()
   return true
 }
 
@@ -181,7 +385,7 @@ async function refreshSummaries({ renderAfter = true } = {}) {
   const selected = selectedDshWorkspace()
   if (selected !== undefined && (changed || state.workspace === null)) await openDshWorkspace(selected.id, { renderAfter })
   else if (state.workspace === null && state.summaries.length > 0) await openWorkspace(state.summaries[0].id)
-  else if (renderAfter && changed && canReplaceView()) render()
+  else if (renderAfter && changed && canReplaceView()) scheduleRender()
   return changed
 }
 
@@ -194,11 +398,20 @@ async function openWorkspace(id, { renderAfter = true } = {}) {
   state.activeId = state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null
   if (renderAfter && canReplaceView()) render()
   await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
-  if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
+  if (renderAfter && load === state.workspaceLoad && canReplaceView()) scheduleRender()
 }
 
 async function refreshProjection() {
+  // A straggler (e.g. the deferred refresh after submitting a draft) must not
+  // bring fetches back to a closed view.
+  if (!viewActive) return false
+  const hadWorkspace = state.workspace !== null
   const summariesChanged = await refreshSummaries({ renderAfter: false })
+  // refreshSummaries already bootstraps the workspace when it was null (the
+  // M4 activation path) and reloads the selected DSH workspace itself on
+  // summary changes; reloading again right after the bootstrap would double
+  // the catch-up fetches for the identical data.
+  if (!hadWorkspace && state.workspace !== null) return true
   if (!summariesChanged || state.workspace === null || !canReplaceView()) return summariesChanged
   if (state.selectedDshWorkspaceId !== null) await openDshWorkspace(state.selectedDshWorkspaceId)
   else await openWorkspace(state.workspace.id)
@@ -232,9 +445,18 @@ async function archiveThread(thread) {
       }
     }
     state.workspace.threads = state.workspace.threads.filter(item => !removed.has(item.id))
+    for (const id of removed) forgetDetailScroll(safeSessionStorage(), id)
     for (const key of [...state.cardPositions.keys()]) {
       if ([...removed].some(id => key.startsWith(`${id}:`))) state.cardPositions.delete(key)
     }
+    let collapsedChanged = false
+    for (const key of [...state.collapsedCardIds]) {
+      if ([...removed].some(id => key.startsWith(`${id}:`))) {
+        state.collapsedCardIds.delete(key)
+        collapsedChanged = true
+      }
+    }
+    if (collapsedChanged) persistCollapsedCards()
     state.activeId = state.activeId !== null && state.workspace.threads.some(item => item.id === state.activeId)
       ? state.activeId
       : state.workspace.threads[0]?.id ?? null
@@ -429,11 +651,22 @@ function markdownBlock(text) {
   return output.join('')
 }
 
+// Markdown parsing is pure CPU and repeats for every card on every canvas
+// rebuild; cache the rendered HTML by input text so stable answers are never
+// re-parsed. Bounded: streaming partial texts churn keys, so evict oldest.
+const markdownCache = new Map()
+const MARKDOWN_CACHE_LIMIT = 500
 function renderMarkdown(text) {
-  const parts = String(text).split(/```/)
-  return parts.map((part, index) => index % 2 === 1
+  const key = String(text)
+  const cached = markdownCache.get(key)
+  if (cached !== undefined) return cached
+  const parts = key.split(/```/)
+  const rendered = parts.map((part, index) => index % 2 === 1
     ? `<pre><code>${escapeHtml(part.replace(/^\w*\n/, ''))}</code></pre>`
     : markdownBlock(part)).join('')
+  if (markdownCache.size >= MARKDOWN_CACHE_LIMIT) markdownCache.delete(markdownCache.keys().next().value)
+  markdownCache.set(key, rendered)
+  return rendered
 }
 
 function overlapsCard(position, other) {
@@ -560,6 +793,7 @@ function layoutConversationGraph(cards, threads) {
 function conversationCards(threads) {
   const cards = []
   const cardsByThread = new Map()
+  const threadsById = new Map(threads.map(thread => [thread.id, thread]))
   for (const thread of threads) {
     const messages = messagesFor(thread)
     const turns = []
@@ -629,7 +863,9 @@ function conversationCards(threads) {
     if (card.turnIndex > 0) card.parentId = siblings[card.turnIndex - 1].id
     else {
       const parentCards = cardsByThread.get(card.sourceParentId)
-      const sourceThread = threads.find(thread => thread.id === card.dshThreadId)
+      // Lookup by map instead of a linear `threads.find` per first-turn card:
+      // with N subagent threads this loop ran O(cards × threads) per render.
+      const sourceThread = threadsById.get(card.dshThreadId)
       const firstChildQuestion = siblings?.[0]
       const seedLength = sourceThread?.sourceSeedLength ?? firstChildQuestion?.sourceSeq
       // A fork inherits every parent event before DSH's durable seed boundary.
@@ -642,6 +878,93 @@ function conversationCards(threads) {
     }
   }
   return layoutConversationGraph(cards, threads)
+}
+
+function conversationGraphView(cards, collapsedCardIds = state.collapsedCardIds) {
+  const cardIds = new Set(cards.map(card => card.id))
+  const childrenByParent = new Map()
+  for (const card of cards) {
+    if (card.parentId === null || !cardIds.has(card.parentId)) continue
+    const children = childrenByParent.get(card.parentId) ?? []
+    children.push(card.id)
+    childrenByParent.set(card.parentId, children)
+  }
+
+  const hiddenIds = new Set()
+  for (const rootId of collapsedCardIds) {
+    if (!cardIds.has(rootId)) continue
+    const visited = new Set([rootId])
+    const visit = parentId => {
+      for (const childId of childrenByParent.get(parentId) ?? []) {
+        if (visited.has(childId)) continue
+        visited.add(childId)
+        hiddenIds.add(childId)
+        visit(childId)
+      }
+    }
+    visit(rootId)
+  }
+
+  // Persisted collapse roots must remain visible even if malformed metadata
+  // contains a cycle where two collapsed nodes otherwise hide each other.
+  for (const rootId of collapsedCardIds) hiddenIds.delete(rootId)
+
+  // Descendant counts used to run one BFS per card (O(V·E) overall), which
+  // showed up as a per-render CPU spike once the canvas held hundreds of
+  // subagent cards. Cards have a single parentId, so the graph is a forest
+  // and one memoized traversal computes every count in O(V+E). Malformed
+  // metadata can still form a cycle; the memo path detects it and falls
+  // back to the original per-card BFS, which keeps the unique-descendant
+  // semantics (a cycle member counts every other member exactly once).
+  const descendantCounts = new Map()
+  let cyclic = false
+  const descendantsOf = (cardId, visiting) => {
+    const cached = descendantCounts.get(cardId)
+    if (cached !== undefined) return cached
+    if (visiting.has(cardId)) { cyclic = true; return 0 }
+    visiting.add(cardId)
+    let count = 0
+    for (const childId of childrenByParent.get(cardId) ?? []) count += 1 + descendantsOf(childId, visiting)
+    visiting.delete(cardId)
+    descendantCounts.set(cardId, count)
+    return count
+  }
+  for (const card of cards) { if (cyclic) break; descendantsOf(card.id, new Set()) }
+  if (cyclic) {
+    descendantCounts.clear()
+    for (const card of cards) {
+      const visited = new Set([card.id])
+      const pending = [...(childrenByParent.get(card.id) ?? [])]
+      while (pending.length > 0) {
+        const descendantId = pending.pop()
+        if (visited.has(descendantId)) continue
+        visited.add(descendantId)
+        pending.push(...(childrenByParent.get(descendantId) ?? []))
+      }
+      descendantCounts.set(card.id, visited.size - 1)
+    }
+  }
+
+  return {
+    cards: cards.filter(card => !hiddenIds.has(card.id)),
+    childCounts: new Map(cards.map(card => [card.id, childrenByParent.get(card.id)?.length ?? 0])),
+    descendantCounts,
+  }
+}
+
+function revealConversationThread(cards, threadId) {
+  const byId = new Map(cards.map(card => [card.id, card]))
+  let changed = false
+  for (const target of cards.filter(card => card.dshThreadId === threadId)) {
+    const visited = new Set([target.id])
+    let parentId = target.parentId
+    while (parentId !== null && !visited.has(parentId)) {
+      visited.add(parentId)
+      if (state.collapsedCardIds.delete(parentId)) changed = true
+      parentId = byId.get(parentId)?.parentId ?? null
+    }
+  }
+  if (changed) persistCollapsedCards()
 }
 
 function canvasConnectors(cards) {
@@ -658,19 +981,24 @@ function canvasConnectors(cards) {
   return links.join('')
 }
 
-function conversationCard(card) {
+function conversationCard(card, graph) {
   const active = card.dshThreadId === state.activeId ? 'active' : ''
   const source = card.parentId === null ? 'DSH 会话' : card.turnIndex === 0 ? 'DSH 分支' : '追问'
-  const branchSequence = Number.isInteger(card.answer?.sourceSeq) ? ` data-seq="${card.answer.sourceSeq}"` : ''
   const continueButton = card.canContinue === true
-    ? `<button class="branch-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${card.id}" title="添加追问" aria-label="为 ${escapeHtml(card.question)} 添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button>`
+    ? `<button class="graph-continue-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" aria-label="添加追问" title="添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button>`
     : ''
+  const childCount = graph.childCounts.get(card.id) ?? 0
+  const collapsed = state.collapsedCardIds.has(card.id)
+  const foldLabel = collapsed ? '展开后续对话' : '折叠后续对话'
+  const foldButton = childCount === 0 || card.canContinue === true ? '' : `<button class="graph-fold-button${collapsed ? ' collapsed' : ''}" data-action="toggle-card-children" data-card="${escapeHtml(card.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${foldLabel}" title="${foldLabel}"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 8h9"/>${collapsed ? '<path d="M8 3.5v9"/>' : ''}</svg></button>`
+  const branchButton = childCount === 0 || card.canContinue === true || !Number.isInteger(card.answer?.sourceSeq) ? '' : `<button class="graph-branch-button" data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" data-seq="${card.answer.sourceSeq}" aria-label="在新对话中分支" title="在新对话中分支"><svg aria-hidden="true" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M13.0762 1.37207C14.0846 1.37228 14.9021 2.19077 14.9023 3.19922C14.9022 4.20772 14.0847 5.02518 13.0762 5.02539C12.2967 5.02539 11.6325 4.53691 11.3701 3.84961H4.35547C4.79397 4.26458 5.15861 4.7644 5.41699 5.33496L7.10645 9.06738C7.88526 10.7875 9.55104 11.9228 11.4189 12.0371C11.7085 11.4109 12.3411 10.9756 13.0762 10.9756C14.0843 10.9759 14.9023 11.7936 14.9023 12.8018C14.9023 13.81 14.0843 14.6277 13.0762 14.6279C12.2534 14.6279 11.5574 14.0832 11.3291 13.335C8.9868 13.1879 6.89981 11.7612 5.92285 9.60352L4.23242 5.87109C3.67503 4.64033 2.44878 3.84961 1.09766 3.84961V2.54883C1.10665 2.54883 1.11601 2.54975 1.125 2.5498L11.3701 2.54883C11.6326 1.86151 12.2969 1.37207 13.0762 1.37207ZM13.0762 12.2764C12.7858 12.2764 12.5508 12.5114 12.5508 12.8018C12.5508 13.0921 12.7858 13.3281 13.0762 13.3281C13.3664 13.3279 13.6025 13.092 13.6025 12.8018C13.6025 12.5115 13.3664 12.2766 13.0762 12.2764ZM13.0762 2.67285C12.7855 2.67285 12.55 2.90861 12.5498 3.19922C12.5499 3.48987 12.7855 3.72559 13.0762 3.72559C13.3667 3.72538 13.6024 3.48975 13.6025 3.19922C13.6023 2.90874 13.3666 2.67306 13.0762 2.67285Z" fill="currentColor"/></svg></button>`
   return `<article class="thread-card ${active}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
-    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button>${continueButton}</div>
+    ${continueButton}${foldButton}${branchButton}
+    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button></div>
     <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span></div>
     <div class="thread-answer">${card.answer === null ? '<p class="thread-answer-empty">等待助手回复</p>' : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}</div>
-    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
+    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
   </article>`
 }
 
@@ -682,7 +1010,9 @@ function draftActions(draft) {
 function draftPlacement(cards) {
   const draft = state.draft
   if (draft === null || draft.kind === 'new') return null
-  const parent = cards.find(card => card.id === draft.anchorId) ?? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
+  const parent = draft.anchorId === undefined
+    ? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
+    : cards.find(card => card.id === draft.anchorId)
   if (parent === undefined) return null
   return { parent, position: firstAvailableCardPosition({ x: parent.position.x + 365, y: parent.position.y }, cards.map(card => card.position)) }
 }
@@ -705,12 +1035,14 @@ function draftCard(cards) {
 function renderCanvas() {
   const threads = state.workspace?.threads ?? []
   if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>当前工作目录还没有 DSH 对话。</strong><p>点击新会话，在画布中输入第一条消息。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
-  const cards = conversationCards(threads)
+  const allCards = conversationCards(threads)
+  const graph = conversationGraphView(allCards)
+  const cards = graph.cards
   if (!state.canvasViewInitialized) {
     state.canvasCamera = initialCanvasCamera(cards)
     state.canvasViewInitialized = true
   }
-  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(conversationCard).join('')}${draftCard(cards)}</div></div></div></section>`
+  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(card => conversationCard(card, graph)).join('')}${draftCard(cards)}</div></div></div></section>`
 }
 
 function isProcessMessage(message) {
@@ -758,17 +1090,18 @@ function renderThread() {
   if (thread === null) return renderCanvas()
   const messages = messagesFor(thread)
   const waiting = state.pendingReplies.has(thread.dshSessionId)
-  return `<section class="detail-view"><header class="detail-head"><div class="detail-head-title"><div class="detail-head-meta"><span class="detail-badge">${thread.parentId === null ? '会话' : '分支'}</span>${thread.dshSessionTitle ?? thread.title ? `<span class="detail-subtitle">${escapeHtml(thread.dshSessionTitle ?? thread.title)}</span>` : ''}</div><h1>${escapeHtml(questionFor(thread))}</h1></div><div class="detail-head-actions"><button data-action="open-dsh" data-thread="${thread.id}" title="在原生对话中打开此会话">在 DSH 中打开</button><button data-action="open-branch" data-thread="${thread.id}" title="基于最新回答创建分支">创建分支</button><button class="primary" data-action="show-canvas">返回画布</button></div></header><div class="detail-scroll">${messages.map(message => threadMessage(thread, message)).join('') || '<div class="note-empty">等待这条会话的第一条消息。</div>'}</div><form class="message-composer" data-compose="${thread.id}"><textarea maxlength="4000" placeholder="继续当前会话…" ${waiting ? 'disabled' : ''}></textarea><button class="primary" type="submit" ${waiting ? 'disabled' : ''}>${waiting ? '等待回复' : '发送'}</button></form></section>`
+  return `<section class="detail-view"><header class="detail-head"><div class="detail-head-title"><div class="detail-head-meta"><span class="detail-badge">${thread.parentId === null ? '会话' : '分支'}</span>${thread.dshSessionTitle ?? thread.title ? `<span class="detail-subtitle">${escapeHtml(thread.dshSessionTitle ?? thread.title)}</span>` : ''}</div><h1>${escapeHtml(questionFor(thread))}</h1></div><div class="detail-head-actions"><button data-action="open-dsh" data-thread="${thread.id}" title="在原生对话中打开此会话">在 DSH 中打开</button><button data-action="open-branch" data-thread="${thread.id}" title="基于最新回答创建分支">创建分支</button><button class="primary" data-action="show-canvas">返回画布</button></div></header><div class="detail-scroll" data-thread-id="${escapeHtml(thread.id)}">${messages.map(message => threadMessage(thread, message)).join('') || '<div class="note-empty">等待这条会话的第一条消息。</div>'}</div><form class="message-composer" data-compose="${thread.id}"><textarea maxlength="4000" placeholder="继续当前会话…" ${waiting ? 'disabled' : ''}></textarea><button class="primary" type="submit" ${waiting ? 'disabled' : ''}>${waiting ? '等待回复' : '发送'}</button></form></section>`
 }
 
 function render() {
-  const detail = state.mode === 'thread' ? document.querySelector('.detail-scroll') : null
-  const detailScrollTop = detail instanceof HTMLElement ? detail.scrollTop : null
+  if (state.mode === 'thread') syncDetailScrollFromElement(document.querySelector('.detail-scroll'))
   const cardScrollTops = new Map()
   if (state.mode === 'canvas') {
+    // Key by the unique card id: every card of a session shares data-thread,
+    // so keying on it would clobber sibling cards' scroll positions.
     for (const answer of document.querySelectorAll('.thread-card[data-thread] .thread-answer')) {
       const card = answer.closest('.thread-card')
-      if (card instanceof HTMLElement && typeof card.dataset.thread === 'string') cardScrollTops.set(card.dataset.thread, answer.scrollTop)
+      if (card instanceof HTMLElement && typeof card.dataset.cardId === 'string') cardScrollTops.set(card.dataset.cardId, answer.scrollTop)
     }
   }
   const workspace = state.workspace
@@ -781,18 +1114,51 @@ function render() {
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
   app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section></main>`
   installDragging()
-  for (const [threadId, scrollTop] of cardScrollTops) {
-    const answer = app.querySelector(`.thread-card[data-thread="${CSS.escape(threadId)}"] .thread-answer`)
+  for (const [cardId, scrollTop] of cardScrollTops) {
+    const answer = app.querySelector(`.thread-card[data-card-id="${CSS.escape(cardId)}"] .thread-answer`)
     if (answer instanceof HTMLElement) answer.scrollTop = scrollTop
   }
-  if (detailScrollTop !== null) window.requestAnimationFrame(() => {
-    const nextDetail = document.querySelector('.detail-scroll')
-    if (nextDetail instanceof HTMLElement) nextDetail.scrollTop = detailScrollTop
-  })
+  if (state.mode === 'thread') pinDetailScroll()
+  else stopDetailScrollPin()
+  const detailThread = state.mode === 'thread' ? currentThread() : null
+  if (detailThread !== null) writePersistedDetailView(safeSessionStorage(), { mode: 'thread', activeId: detailThread.id })
+  else if (state.mode === 'canvas') clearPersistedDetailView(safeSessionStorage())
 }
 
 function renderPreservingDetailScroll() {
   render()
+}
+
+// Event-driven renders coalesce into one full render per animation frame.
+// N streaming subagents each used to trigger their own full innerHTML
+// rebuild per event; at 20+ sessions the DOM replacement rate collapsed
+// the frame rate and starved input handling. User-driven paths (clicks,
+// drags, form submits) keep calling render() directly for synchronous
+// feedback — only the message/poll push paths go through the scheduler.
+let scheduledRenderFrame = 0
+let scheduledRenderRetry = 0
+function scheduleRender() {
+  // Silent views never schedule work; the activation catch-up re-renders
+  // everything from fresh data anyway.
+  if (!viewActive) return
+  if (scheduledRenderFrame !== 0) return
+  scheduledRenderFrame = window.requestAnimationFrame(() => {
+    scheduledRenderFrame = 0
+    // requestAnimationFrame never fires while the document is hidden, so
+    // pending renders resume naturally on the visibilitychange catch-up.
+    if (document.hidden) return
+    if (!canReplaceView()) {
+      // A gated moment (drag / detail scroll) must defer, not drop, the
+      // update: retry shortly after the gate window opens.
+      if (scheduledRenderRetry !== 0) window.clearTimeout(scheduledRenderRetry)
+      scheduledRenderRetry = window.setTimeout(() => {
+        scheduledRenderRetry = 0
+        scheduleRender()
+      }, 200)
+      return
+    }
+    renderPreservingDetailScroll()
+  })
 }
 
 function applyCanvasTransform() {
@@ -927,11 +1293,55 @@ app.addEventListener('wheel', event => {
   zoomCanvas(viewport, state.zoom + (event.deltaY < 0 ? .05 : -.05), event.clientX, event.clientY)
 }, { passive: false })
 
+// Layer 2 against the projection event flood: while the user scrolls the
+// detail view, defer every event-driven re-render and catch up once they
+// stop, so the wheel never fights a full DOM replacement.
+const detailScrollTarget = target => (target instanceof Element ? target.closest('.detail-scroll') : null)
+app.addEventListener('wheel', event => {
+  if (detailScrollTarget(event.target) !== null) deferDetailRefresh()
+}, { passive: true })
+app.addEventListener('touchmove', event => {
+  if (detailScrollTarget(event.target) !== null) deferDetailRefresh()
+}, { passive: true })
+app.addEventListener('pointerdown', event => {
+  // Also covers dragging the scrollbar, which emits no wheel events.
+  if (detailScrollTarget(event.target) !== null) deferDetailRefresh()
+})
+const DETAIL_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
+window.addEventListener('keydown', event => {
+  if (state.mode !== 'thread' || !DETAIL_SCROLL_KEYS.has(event.key)) return
+  if (event.target instanceof Element && event.target.closest('textarea, input, select') !== null) return
+  deferDetailRefresh()
+})
+app.addEventListener('scroll', event => {
+  // scroll does not bubble; capture on #app still sees it. This keeps the
+  // authoritative offset current (and persisted) for the next render, which
+  // replaces the element and therefore cannot rely on its own scrollTop.
+  const container = event.target
+  if (!(container instanceof Element) || !container.classList.contains('detail-scroll')) return
+  const threadId = container.dataset?.threadId
+  if (typeof threadId !== 'string') return
+  detailScroll.threadId = threadId
+  detailScroll.top = nextDetailScrollTop(detailScroll.top, container, detailLastProgrammaticTop)
+  writeDetailScroll(safeSessionStorage(), threadId, detailScroll.top)
+}, true)
+
+// Track pointer-down so the card click handler can tell a plain click from a
+// text-selection or drag gesture; acting on the latter would re-render and
+// wipe the user's selection.
+let pointerDownPosition = null
+app.addEventListener('pointerdown', event => { pointerDownPosition = { x: event.clientX, y: event.clientY } })
+
 app.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]')
   if (!(button instanceof HTMLElement)) {
     const card = event.target instanceof Element ? event.target.closest('.thread-card[data-thread]:not(.draft-card)') : null
     if (!(card instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.node-handle, textarea, select, form')) return
+    // A double-click selects a word and a drag selects a range; neither is a
+    // select-click, so leave the selection intact instead of re-rendering.
+    if (event.detail > 1) return
+    if (pointerDownPosition !== null
+      && Math.hypot(event.clientX - pointerDownPosition.x, event.clientY - pointerDownPosition.y) > 4) return
     const thread = state.workspace?.threads.find(item => item.id === card.dataset.thread)
     if (thread === undefined) return
     state.activeId = thread.id
@@ -952,6 +1362,7 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'select-thread' && thread !== undefined) {
       state.activeId = thread.id
       state.error = ''
+      if (state.workspace !== null) revealConversationThread(conversationCards(state.workspace.threads), thread.id)
       render()
       void loadThreadHistory(thread)
       // Bidirectional current-session sync: switch DSH's current session
@@ -960,6 +1371,23 @@ app.addEventListener('click', async event => {
     }
     if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; render(); void loadThreadHistory(thread) }
     if (button.dataset.action === 'show-canvas') { state.mode = 'canvas'; render() }
+    if (button.dataset.action === 'toggle-card-children' && button.dataset.card !== undefined) {
+      const cardId = button.dataset.card
+      const collapsing = !state.collapsedCardIds.has(cardId)
+      if (collapsing && state.workspace !== null) {
+        const allCards = conversationCards(state.workspace.threads)
+        const nextCollapsed = new Set(state.collapsedCardIds).add(cardId)
+        const visibleCards = conversationGraphView(allCards, nextCollapsed).cards
+        const visibleIds = new Set(visibleCards.map(card => card.id))
+        const draftParentId = draftPlacement(allCards)?.parent.id
+        if (draftParentId !== undefined && !visibleIds.has(draftParentId)) return setError('请先完成或取消正在编辑的追问或分支')
+        if (state.activeId !== null && !visibleCards.some(card => card.dshThreadId === state.activeId)) return setError('当前会话位于这个后续分支中，请先切换会话')
+      }
+      collapsing ? state.collapsedCardIds.add(cardId) : state.collapsedCardIds.delete(cardId)
+      persistCollapsedCards()
+      render()
+      window.setTimeout(() => document.querySelector(`[data-action="toggle-card-children"][data-card="${selectorValue(cardId)}"]`)?.focus(), 0)
+    }
     if (button.dataset.action === 'open-continue' && thread !== undefined) openContinue(thread, button.dataset.card)
     if (button.dataset.action === 'open-branch' && thread !== undefined) {
       const requestedSeq = Number(button.dataset.seq)
@@ -1019,54 +1447,168 @@ window.addEventListener('message', event => {
   if (event.origin !== window.location.origin || event.data?.source !== 'dsh-synapse') return
   const data = event.data
   if (data.type === 'synapse:map-opened') {
+    // M4: the host opening the canvas is the single activation source. It
+    // performs the full catch-up (host bridge state + projection reload)
+    // before this render handshake, then resumes the M2 throttled realtime.
+    activateView()
     resetCanvasCamera()
     state.mode = 'canvas'
     render()
-    window.requestAnimationFrame(() => post('synapse:map-ready'))
+    mapReadyFrame = window.requestAnimationFrame(() => { mapReadyFrame = 0; post('synapse:map-ready') })
+    restorePersistedDetailView()
   }
-  if (data.type === 'synapse:workspaces') {
-    state.dshWorkspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
-    const current = currentDshWorkspace()
-    if (current !== undefined && current.id !== state.selectedDshWorkspaceId) void openDshWorkspace(current.id).catch(setError)
-    else if (state.selectedDshWorkspaceId !== null) void openDshWorkspace(state.selectedDshWorkspaceId).catch(setError)
-    else if (canReplaceView()) render()
+  if (data.type === 'synapse:map-closed') deactivateView()
+  if (data.type === 'synapse:theme') {
+    document.documentElement.dataset.theme = data.dark === true ? 'dark' : 'light'
   }
-  if (data.type === 'synapse:current-session') {
+  if (data.type === 'synapse:workspaces' && viewActive) {
+    const workspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
+    // Subagent churn re-delivers this message on every list-snapshot change.
+    // An identical list must not re-run the workspace reload (one fetch per
+    // projection workspace plus two full DOM rebuilds) N times a second.
+    const signature = dshWorkspacesSignature(workspaces)
+    if (signature !== state.dshWorkspacesSignature || state.workspace === null) {
+      state.dshWorkspaces = workspaces
+      state.dshWorkspacesSignature = signature
+      const current = currentDshWorkspace()
+      if (current !== undefined && current.id !== state.selectedDshWorkspaceId) void openDshWorkspace(current.id).catch(setError)
+      else if (state.selectedDshWorkspaceId !== null) void openDshWorkspace(state.selectedDshWorkspaceId).catch(setError)
+      else if (canReplaceView()) scheduleRender()
+    }
+  }
+  if (data.type === 'synapse:current-session' && viewActive) {
     const previousId = state.currentDsh?.id
     state.currentDsh = data.session
     const thread = currentDshThread()
-    if (thread !== undefined) state.activeId = thread.id
-    if (previousId !== data.session?.id) void openCurrentWorkspace().then(opened => { if (!opened && canReplaceView()) render() }).catch(setError)
-    else if (canReplaceView()) render()
+    if (thread !== undefined) {
+      state.activeId = thread.id
+      if (state.workspace !== null) revealConversationThread(conversationCards(state.workspace.threads), thread.id)
+    }
+    if (previousId !== data.session?.id) void openCurrentWorkspace().then(opened => { if (!opened && canReplaceView()) scheduleRender() }).catch(setError)
+    else scheduleRender()
   }
-  if (data.type === 'synapse:live-reply' && typeof data.sessionId === 'string') {
+  if (data.type === 'synapse:live-reply' && typeof data.sessionId === 'string' && viewActive) {
     const thread = state.workspace?.threads.find(item => item.dshSessionId === data.sessionId)
     if (thread !== undefined) {
-      if (data.running === true) state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
-      else state.liveReplies.delete(data.sessionId)
-      if (canReplaceView() || state.pendingReplies.has(data.sessionId)) scheduleLiveRender()
+      if (data.running === true) {
+        state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
+        // Streaming: patch the live card's answer in place instead of
+        // rebuilding the whole canvas on every chunk; a full render reconciles
+        // at stream end. The detail view is single-thread, so keep its cheap
+        // throttled full render — and skip it entirely for streams on
+        // non-active threads, which cannot change the detail output.
+        if (state.mode === 'canvas') scheduleLiveCardUpdate(data.sessionId)
+        else if (thread.id === state.activeId && canReplaceView()) scheduleLiveRender()
+      } else {
+        state.liveReplies.delete(data.sessionId)
+        // A pending user reply settling is urgent (one event per turn, never
+        // a storm): render synchronously, bypassing the detail defer. Every
+        // other stream end coalesces into the frame scheduler so N subagent
+        // streams finishing together cost one render, not N.
+        if (state.pendingReplies.has(data.sessionId)) renderPreservingDetailScroll()
+        else scheduleRender()
+      }
     }
   }
   if (data.type === 'synapse:forked-session' || data.type === 'synapse:created-session' || data.type === 'synapse:message-sent') settleRpc(data.requestId, data.session ?? data)
   if (data.type === 'synapse:bridge-error') { settleRpc(data.requestId, undefined, new Error(data.message)); if (data.requestId === undefined) setError(data.message) }
 })
 
-post('synapse:request-current')
-refreshSummaries().catch(setError)
+persistedDetailView = readPersistedDetailView(safeSessionStorage())
+// M4 on-demand runtime. Loading the iframe no longer pre-fetches summaries,
+// asks the host for its state, or mounts the 1s projection poll: the view
+// boots silent and only activates when the host sends synapse:map-opened.
+// Closing the canvas (synapse:map-closed / page teardown) tears every timer
+// and pending frame back down, so a closed view schedules literally nothing.
 let polling = false
 let liveRenderTimer = 0
+let liveCardFrame = 0
+const liveCardFrameIds = new Set()
+function scheduleLiveCardUpdate(sessionId) {
+  if (!viewActive) return
+  // Coalesce streaming chunks to one DOM patch per animation frame — and
+  // collect every streaming session, so N subagents streaming in the same
+  // frame each get their card patched instead of only the last one.
+  liveCardFrameIds.add(sessionId)
+  if (liveCardFrame !== 0) return
+  liveCardFrame = window.requestAnimationFrame(() => {
+    liveCardFrame = 0
+    const ids = [...liveCardFrameIds]
+    liveCardFrameIds.clear()
+    for (const id of ids) applyLiveReplyToCard(id)
+  })
+}
+function applyLiveReplyToCard(sessionId) {
+  if (state.mode !== 'canvas') return
+  const thread = state.workspace?.threads.find(item => item.dshSessionId === sessionId)
+  if (thread === undefined) return
+  const live = state.liveReplies.get(sessionId)
+  if (live?.running !== true) return
+  const cards = app.querySelectorAll(`.thread-card[data-thread="${CSS.escape(thread.id)}"]`)
+  const card = cards[cards.length - 1]
+  if (!(card instanceof HTMLElement)) return
+  const answer = card.querySelector('.thread-answer')
+  if (!(answer instanceof HTMLElement)) return
+  const text = live.text
+  answer.innerHTML = text.trim() === ''
+    ? '<p class="thread-answer-pending">正在回复</p>'
+    : `${renderMarkdown(text)}<p class="thread-answer-pending">正在回复</p>`
+}
 function scheduleLiveRender() {
-  if (liveRenderTimer !== 0 || !canReplaceView()) return
+  if (!viewActive || liveRenderTimer !== 0 || !canReplaceView()) return
   liveRenderTimer = window.setTimeout(() => {
     liveRenderTimer = 0
     if (canReplaceView()) renderPreservingDetailScroll()
   }, 120)
 }
 async function pollProjection() {
-  if (polling || document.hidden || !canReplaceView()) return
+  if (polling || !viewActive || document.hidden || !canReplaceView()) return
   polling = true
   try {
     await refreshProjection()
   } finally { polling = false }
 }
-window.setInterval(() => { void pollProjection() }, 1_000)
+function activateView() {
+  if (viewActive) return
+  viewActive = true
+  // Full catch-up first (reusing the M2 refresh path): ask the host to push
+  // its bridge state, reload the projection once, then resume realtime via
+  // the 1s projection poll. The persisted detail view is restored after the
+  // catch-up so its thread is actually loaded on a first-ever open.
+  post('synapse:request-current')
+  refreshProjection()
+    .then(() => restorePersistedDetailView())
+    .catch(setError)
+  if (projectionPollTimer === 0) projectionPollTimer = window.setInterval(() => { void pollProjection() }, 1_000)
+}
+function deactivateView() {
+  if (!viewActive) return
+  viewActive = false
+  // Silence means stopping the sources, not discarding downstream: drop the
+  // poll interval, every pending frame-coalesced render, the live-card patch
+  // frame, the detail throttle and the scroll pin observers. A canvas closed
+  // for hours must leave nothing scheduled behind (no timer, no fetch, no
+  // render). In-flight user RPCs (state.pendingRpc) keep their own 20s
+  // self-cleaning timeouts: their results must still settle.
+  if (projectionPollTimer !== 0) { window.clearInterval(projectionPollTimer); projectionPollTimer = 0 }
+  if (mapReadyFrame !== 0) { window.cancelAnimationFrame(mapReadyFrame); mapReadyFrame = 0 }
+  if (scheduledRenderFrame !== 0) { window.cancelAnimationFrame(scheduledRenderFrame); scheduledRenderFrame = 0 }
+  if (scheduledRenderRetry !== 0) { window.clearTimeout(scheduledRenderRetry); scheduledRenderRetry = 0 }
+  if (liveCardFrame !== 0) { window.cancelAnimationFrame(liveCardFrame); liveCardFrame = 0 }
+  liveCardFrameIds.clear()
+  if (liveRenderTimer !== 0) { window.clearTimeout(liveRenderTimer); liveRenderTimer = 0 }
+  if (detailRefreshTimer !== 0) { window.clearTimeout(detailRefreshTimer); detailRefreshTimer = 0 }
+  stopDetailScrollPin()
+}
+// The frame is going away entirely (tab close, iframe unload): tell the host
+// so it can drop its fast flush cadence for the now-viewerless projection.
+window.addEventListener('pagehide', () => post('synapse:view-unloaded'))
+// While the page is hidden both requestAnimationFrame and the projection
+// poll are paused, so events that arrived in the background would otherwise
+// stay unrendered until the next push. Catch up once on return — an inactive
+// view stays silent, its catch-up happens on the next activation instead.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !viewActive) return
+  scheduleRender()
+  void pollProjection()
+})

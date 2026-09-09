@@ -28,6 +28,8 @@ window.__ModuleLoader__.load({
     var jsxs = jsxRuntime.jsxs;
     var useState = react.useState;
     var useEffect = react.useEffect;
+    // 手机端 app 下载仓库（远程控制弹窗「手机端下载」行，供用户复制）。
+    var DSH_MOBILE_REPO = "https://github.com/hzhz314159/dsh-mini";
     var useRef = react.useRef;
 
     // startup beacon: fires the moment this bundle's factory materializes
@@ -2533,6 +2535,8 @@ var qrcode = function() {
       );
       var copyState = useState("");
       var setCopy = copyState[1];
+      var dlCopyState = useState("");
+      var setDlCopy = dlCopyState[1];
       if (!s.overlayOpen) return null;
       return h(
         "div",
@@ -2619,6 +2623,30 @@ var qrcode = function() {
             h("span", { className: gw.reachable ? "dsm-ok" : "dsm-bad" }, gw.reachable ? "手机可访问" : gw.lanEnabled ? "手机不可访问" : "仅本机")
           ),
           h("div", { className: "dsm-hint" }, "用手机系统相机扫码，或在 DSH-Mobile 应用内扫码连接（连接需同一 Wi-Fi）。"),
+          h(
+            "div",
+            { className: "dsm-url-row" },
+            h("span", { className: "dsm-dl-label" }, "手机端下载"),
+            h("input", { className: "dsm-url", readOnly: true, value: DSH_MOBILE_REPO, onFocus: function (e) { e.target.select(); } }),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "dsm-btn",
+                onClick: function () {
+                  try {
+                    navigator.clipboard.writeText(DSH_MOBILE_REPO).then(function () {
+                      setDlCopy("已复制");
+                      setTimeout(function () { setDlCopy(""); }, 1500);
+                    });
+                  } catch (e) {
+                    /* ignore */
+                  }
+                },
+              },
+              dlCopyState[0] || "复制"
+            )
+          ),
           h(
             "div",
             { className: "dsm-actions" },
@@ -3060,7 +3088,8 @@ var qrcode = function() {
         ".dsm-qr{display:block;width:232px;height:232px}" +
         ".dsm-qr-sm{display:block;width:120px;height:120px;background:#fff;border-radius:10px}" +
         ".dsm-url-row{display:flex;gap:8px}" +
-        ".dsm-url{flex:1;min-width:0;font-size:12px;padding:8px 10px;border-radius:10px;border:1px solid var(--dsw-alias-line,#333);background:transparent;color:inherit}" +
+          ".dsm-dl-label{font-size:12px;color:var(--dsw-alias-label-secondary,#9a9aa5);white-space:nowrap;align-self:center}" +
+        ".dsm-url{flex:1;min-width:0;font-size:12px;padding:8px 10px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2,#333);background:transparent;color:inherit}" +
         ".dsm-status-row{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--dsw-alias-label-secondary,#9a9aa5)}" +
         ".dsm-ok{color:var(--dsw-alias-state-success-primary,#3fbf7f)}.dsm-bad{color:var(--dsw-alias-state-error-primary,#e5484d)}" +
         ".dsm-hint{font-size:12px;color:var(--dsw-alias-label-secondary,#9a9aa5)}" +
@@ -3068,10 +3097,10 @@ var qrcode = function() {
         ".dsm-off{display:flex;flex-direction:column;gap:6px;align-items:center;padding:16px 8px;text-align:center}" +
         ".dsm-off-title{font-size:14px;font-weight:600}.dsm-off-hint{font-size:12px;color:var(--dsw-alias-label-secondary,#9a9aa5)}" +
         ".dsm-actions{display:flex;justify-content:flex-end;gap:8px}" +
-        ".dsm-btn{font:inherit;font-size:13px;padding:7px 14px;border-radius:10px;border:1px solid var(--dsw-alias-line,#333);background:transparent;color:inherit;cursor:pointer}" +
+        ".dsm-btn{font:inherit;font-size:13px;padding:7px 14px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2,#333);background:transparent;color:inherit;cursor:pointer}" +
         ".dsm-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}" +
         ".dsm-btn:disabled{opacity:.5;cursor:default}" +
-        ".dsm-btn-primary{background:var(--dsw-alias-accent-primary,#4c7dff);border-color:transparent;color:#fff}" +
+        ".dsm-btn-primary{background:var(--dsw-alias-brand-primary,#4c7dff);border-color:transparent;color:#fff}" +
         ".dsm-footer-icon{box-sizing:border-box;flex:1 0 100%;width:calc(100% + 8px);height:34px;color:var(--dsw-alias-label-primary,#f2f2f7);background:transparent;border:none;border-radius:12px;margin:4px -4px;padding:6px 2px 6px 10px;font:inherit;font-size:14px;line-height:22px;display:flex;align-items:center;gap:8px;cursor:pointer;overflow:hidden}" +
         ".dsm-footer-icon:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}" +
         ".dsm-footer-icon[data-rail='1']{border-radius:50%;justify-content:center;gap:0;flex:0 0 36px;width:36px;height:36px;margin:8px 0 10px;padding:0}" +
@@ -3082,15 +3111,15 @@ var qrcode = function() {
         ".dsm-set-value{font-size:13px;color:var(--dsw-alias-label-secondary,#9a9aa5)}" +
         ".dsm-set-hint{font-size:12px;color:var(--dsw-alias-label-secondary,#9a9aa5)}" +
         ".dsm-set-warn{font-size:12px;color:var(--dsw-alias-state-error-primary,#e5484d)}" +
-        ".dsm-set-input{font:inherit;font-size:13px;padding:7px 10px;border-radius:10px;border:1px solid var(--dsw-alias-line,#333);background:transparent;color:inherit;min-width:0}" +
+        ".dsm-set-input{font:inherit;font-size:13px;padding:7px 10px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2,#333);background:transparent;color:inherit;min-width:0}" +
         ".dsm-set-input-num{width:96px}" +
         ".dsm-token-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}" +
         ".dsm-token-row .dsm-set-input{flex:1;min-width:160px}" +
         ".dsm-switch{position:relative;display:inline-block;width:40px;height:22px;flex:none}" +
         ".dsm-switch input{opacity:0;width:0;height:0}" +
-        ".dsm-switch-slider{position:absolute;cursor:pointer;inset:0;background:var(--dsw-alias-line,#3a3a44);border-radius:22px;transition:.2s}" +
+        ".dsm-switch-slider{position:absolute;cursor:pointer;inset:0;background:var(--dsw-alias-border-l2,#3a3a44);border-radius:22px;transition:.2s}" +
         ".dsm-switch-slider:before{content:'';position:absolute;height:16px;width:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}" +
-        ".dsm-switch input:checked + .dsm-switch-slider{background:var(--dsw-alias-accent-primary,#4c7dff)}" +
+        ".dsm-switch input:checked + .dsm-switch-slider{background:var(--dsw-alias-brand-primary,#4c7dff)}" +
         ".dsm-switch input:checked + .dsm-switch-slider:before{transform:translateX(18px)}" +
         "[class*='_footerActions']{flex-wrap:wrap}" +
         "[class*='_collapsed'] [class*='_footerActions']{width:36px;justify-content:flex-start}";

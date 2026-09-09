@@ -1,22 +1,25 @@
 /**
  * The 7 built-in tab descriptors: the plugin registers its own pages
- * (explorer / git / terminal / browser / subagent / editor / diff) through
+ * (editor / git / subagent / sidechat / terminal / browser / diff) through
  * the same {@link BetterSidebarService} external plugins use — eating its
  * own dogfood. The terminal descriptor owns its quota (`TERMINAL_LIMIT`)
- * and mints `terminal:<n>` ids through `createTab`; the browser mints
- * `browser:<n>` the same way (no quota).
+ * and mints `terminal:<uuid>` ids through `createTab`; the browser mints
+ * `browser:<n>` the same way (no quota). The editor IS the files window
+ * (the old standalone explorer merged into it).
  */
-import { IconBranchOutline16, IconCodeOutline16, IconFolderOpen16, IconThinkOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconBranchOutline16, IconFolderOpen16, IconNewChatOutline16, IconThinkOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../../context-types.ts'
 import { allLeaves, isAgentTabId, type SidebarState } from '../state.ts'
 import { t } from '../locales.ts'
 import { openSidebarFile } from '../intercept.tsx'
-import { ExplorerView } from '../ExplorerView.tsx'
 import { EditorHost } from '../EditorHost.tsx'
+import { OpenWithSettings } from '../open-with-settings.tsx'
 import { lazyChunkComponent } from '../lazy-chunk.tsx'
 import { GitView } from '../GitView.tsx'
 import { DiffTab } from '../DiffTab.tsx'
 import { SubagentView } from '../SubagentView.tsx'
+import { consumeSidechatSeed, SideChatView, sidechatThreadIdOf } from '../SideChatView.tsx'
+import { api } from '../api.ts'
 import { BrowserView } from '../BrowserView.tsx'
 import { IconTerminalOutline16, IconDiffOutline16, IconGlobeOutline16 } from '../icons.tsx'
 import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from '../../prefs-shared.ts'
@@ -52,6 +55,20 @@ interface TerminalViewProps {
 /** How many UI-owned terminals may be open at once (agent-owned ones are uncapped). */
 export const TERMINAL_LIMIT = 3
 
+/** Optional per-registration builtin behavior (currently terminal title). */
+export interface BuiltinTabOptions {
+  /** Returns the display title for newly opened terminal tabs. */
+  terminalTitle?: () => string
+}
+
+/** A client-side uuid for terminal tab identity (not shown in the UI). */
+function terminalUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
+}
+
 /** Count UI-owned terminals (agent:` tabs excluded — they are the model's). */
 function uiTerminalCount(state: SidebarState): number {
   return allLeaves(state.splits)
@@ -59,33 +76,41 @@ function uiTerminalCount(state: SidebarState): number {
     .filter(tab => tab.type === 'terminal' && !isAgentTabId(tab.id)).length
 }
 
-/** The 7 built-in tab descriptors. */
-export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
+/** The 6 built-in tab descriptors. */
+export function builtinTabs(ctx: Context, options: BuiltinTabOptions = {}): readonly TabDescriptor[] {
   return [
     {
       id: 'editor',
-      title: () => t('editor'),
-      icon: (size: number) => <IconCodeOutline16 size={size} />,
-      order: -1,
-      hidden: true,
-      dedupeKey: (tab) => tab.path,
-      component: ({ ctx, store, scope, tab }) => (
-        <EditorHost ctx={ctx} store={store} scope={scope} path={tab.path ?? ''} title={tab.title} />
-      ),
-    },
-    {
-      id: 'explorer',
-      title: () => t('explorer'),
+      // The FILE VIEWER tab: an editor tab with a path previews/edits that
+      // file. The file tree is no longer hosted in the tab — it is the
+      // persistent Explorer rail to the left of the workbench (ExplorerRail).
+      // dedupeKey = the path, so every file is one tab and a fresh click can
+      // never overwrite a tab already open (the reported preview-replace bug).
+      // Visible in the + menu in the explorer's old slot.
+      title: () => t('files'),
       icon: (size: number) => <IconFolderOpen16 size={size} />,
       order: 10,
-      single: true,
-      component: ({ ctx, store, scope, expanded, onToggleDir, onReferenceFile }) => (
-        <ExplorerView
-          sessionId={scope.sessionId}
-          cwd={scope.cwd}
+      hidden: false,
+      dedupeKey: (tab) => tab.path,
+      // Declarative settings: the merged/separate "file open behavior" picker
+      // was RETIRED with the unified VSCode tab model (a single window with
+      // preview / pinned tabs is now the only behavior), so the editor card
+      // has no toggle rows left — only the "open with" custom panel (SSH host
+      // + external editors) below the (now-empty) rows list.
+      settings: {
+        render: ({ pluginSettings, updatePluginSetting }) => (
+          <OpenWithSettings pluginSettings={pluginSettings} updatePluginSetting={updatePluginSetting} />
+        ),
+      },
+      component: ({ ctx, store, scope, tab, visible, expanded, onToggleDir, onReferenceFile }) => (
+        <EditorHost
+          ctx={ctx}
+          store={store}
+          scope={scope}
+          tab={tab}
+          visible={visible}
           expanded={expanded ?? []}
-          onToggle={onToggleDir ?? (() => { /* no-op */ })}
-          onOpenFile={(path) => { openSidebarFile(ctx, store, scope.sessionId, path) }}
+          onToggleDir={onToggleDir ?? (() => { /* no-op */ })}
           onReferenceFile={onReferenceFile ?? (() => { /* no-op */ })}
         />
       ),
@@ -133,6 +158,51 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       ),
     },
     {
+      id: 'sidechat',
+      title: () => t('sideChat'),
+      icon: (size: number) => <IconNewChatOutline16 size={size} />,
+      order: 35,
+      // Codex-style: EVERY side conversation is its own tab. A plain open
+      // mints a fresh tab flagged `autoCreate` (the view creates the EMPTY
+      // thread on mount); a thread switch from the header menu parks the
+      // target id for a deterministic `sidechat:<threadId>` reattach tab.
+      createTab: () => {
+        const threadId = consumeSidechatSeed()
+        if (threadId !== undefined) {
+          return {
+            tab: {
+              id: `sidechat:${threadId}`,
+              type: 'sidechat',
+              title: t('sideChat'),
+              meta: { threadId },
+            },
+          }
+        }
+        return {
+          tab: {
+            id: `sidechat:new-${crypto.randomUUID()}`,
+            type: 'sidechat',
+            title: t('sideChatUntitled'),
+            meta: { autoCreate: true },
+          },
+        }
+      },
+      // One tab per thread: an already-open thread focuses instead of
+      // duplicating; unbound fresh tabs never dedupe (each mints its own).
+      dedupeKey: (tab) => sidechatThreadIdOf(tab),
+      // Closing the tab releases the thread's live agent; the session and
+      // its history stay persisted (reopen from any thread's header menu).
+      onClose: (tab) => {
+        const threadId = sidechatThreadIdOf(tab)
+        if (threadId !== undefined) {
+          void api.sidechatDispose(threadId).catch(() => {})
+        }
+      },
+      component: ({ ctx, scope, tab, visible }) => (
+        <SideChatView ctx={ctx} scope={scope} tab={tab} visible={visible} />
+      ),
+    },
+    {
       id: 'terminal',
       title: () => t('terminal'),
       icon: (size: number) => <IconTerminalOutline16 size={size} />,
@@ -152,6 +222,18 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
           key: 'bottomPanelAutoTerminal',
           title: () => t('settingsBottomTerminalTitle'),
           desc: () => t('settingsBottomTerminalDesc'),
+        }, {
+          key: 'terminalShell',
+          type: 'text',
+          title: () => t('settingsShellTitle'),
+          desc: () => t('settingsShellDesc'),
+          placeholder: t('settingsShellPlaceholder'),
+        }, {
+          key: 'terminalShellArgs',
+          type: 'text',
+          title: () => t('settingsShellArgsTitle'),
+          desc: () => t('settingsShellArgsDesc'),
+          placeholder: t('settingsShellArgsPlaceholder'),
         }, {
           key: 'terminalFontFamily',
           type: 'text',
@@ -173,10 +255,12 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
         if (count >= TERMINAL_LIMIT) return null
         return {
           tab: {
-            id: `terminal:${state.nextTerminal}`,
+            id: `terminal:${terminalUuid()}`,
             type: 'terminal',
-            title: `${t('terminal')} ${state.nextTerminal}`,
+            title: options.terminalTitle?.() ?? t('terminal'),
           },
+          // Keep the legacy counter advancing for compatibility with older
+          // persisted states; new ids no longer use it.
           patch: { nextTerminal: state.nextTerminal + 1 },
         }
       },

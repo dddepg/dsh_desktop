@@ -169,7 +169,7 @@ window.__ModuleLoader__.load({
       ".__ac_size{font-size:12px;color:var(--dsw-alias-label-secondary);min-width:40px;text-align:right}" +
       ".__ac_btn{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 14px;font:inherit;font-size:13px;cursor:pointer}" +
       ".__ac_btn:hover:not(:disabled){border-color:var(--dsw-alias-state-business-primary)}" +
-      ".__ac_btnPrimary{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-on-accent)}" +
+      ".__ac_btnPrimary{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary-inverted)}" +
       ".__ac_ok{font-size:12px;color:var(--dsw-alias-state-success-primary)}" +
       ".__ac_err{font-size:12px;color:var(--dsw-alias-state-error-primary)}";
     var tagId = "dsh-auto-compact/main.css";

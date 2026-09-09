@@ -22,20 +22,111 @@
 const path = require('node:path');
 
 /** 各补丁目标包内的相对路径（@deepseek-ai/<rel>）。 */
-const FLASH_PKG_REL = path.join('dsh-client-runtime', 'lib', 'client.js');
+// 0.1.2-alpha.1 起 dsh-client-runtime 分解为 dsh-api-session-controller（Session /
+// mergeOrderedBaseline 所在客户端入口）+ dsh-client-store / dsh-client-web。
+// 闪跳修复（mergeOrderedBaseline 保留本地新会话）落点迁至 session-controller。
+const FLASH_PKG_REL = path.join('dsh-api-session-controller', 'lib', 'client.js');
+// image-send-fix 落点：SessionCommandController.prompt（识图门槛 + prompt content
+// 空值守卫）所在的服务端命令入口。同包（dsh-api-session-controller）不同文件——
+// 该包 "." 出口即 lib/index.js（自包含 bundle，内联 types/commands.js 区），运行时
+// 加载的就是它；lib/types/commands.js 是未内联的分块副本（空格缩进 + undefined，
+// 锚点形态不同且非桌面运行时路径），不纳靶。lib/client.js 是客户端侧（FLASH 靶）。
+const SESSION_CTRL_INDEX_PKG_REL = path.join('dsh-api-session-controller', 'lib', 'index.js');
+// journal-stream 历史续读补丁落点：RemoteJournalStream.prepend()（断头锁死 hasMore
+// 的分支）所在的服务端流式客户端。经 @deepseek-ai/dsh-api-gateway/client 子路径加载
+// 的 lib/client.js（bundle 版，保留可读标识符 + protocolViolation$1 重命名符号）。
+const GATEWAY_CLIENT_PKG_REL = path.join('dsh-api-gateway', 'lib', 'client.js');
+// 聊天自动翻页补丁落点：ChatView（手动「加载更早」按钮 / listRef 滚动容器 / loadOlderAnchored）
+// 所在的客户端 UI 包。运行时经 dsh-client-ui-chat/lib/client.js（bundle 版，保留
+// 可读 React hooks 调用与标识符）加载。
+const UI_CHAT_CLIENT_PKG_REL = path.join('dsh-client-ui-chat', 'lib', 'client.js');
+// K1 credentials-absent 指引落点：dsh-host-apiproxy 分解后，报错文案现由
+// dsh-api-settings-controller 透传（credentials 缺席分支）。
+const API_SETTINGS_CONTROLLER_PKG_REL = path.join('dsh-api-settings-controller', 'lib', 'index.js');
+// 对话头（ConversationRoot / chipTitle / composer inert 判定）所在入口：
+// workspace-chip-label-hold（选择工作文件夹时闪回「选择工作区」）靶点。
+const CONVERSATION_PKG_REL = path.join('dsh-client-ui-conversation', 'lib', 'client.js');
+const SKILL_UI_PKG_REL = path.join('dsh-client-ui-skill', 'lib', 'client.js');
+// K25：会话分组「手动排序」拖拽失效修复补丁目标（ViewOptionsMenu /
+// SessionNodeItem / commitSessionDrag 所在入口）。
+const WORKSPACE_PKG_REL = path.join('dsh-client-ui-workspace', 'lib', 'client.js');
 const EXPOSE_PKG_REL = path.join('dsh-host-apiproxy', 'lib', 'index.js');
 const PERSISTENCE_PKG_REL = path.join('dsh-session-persistence-jsonl', 'lib', 'index.js');
+// 核心持久层（assertEventsSupported 所在；jsonl 是其后端实现，两者不同包）。
+const SESSION_PERSISTENCE_CORE_PKG_REL = path.join('dsh-session-persistence', 'lib', 'index.js');
 const SLOT_KEY_COMPAT_PKG_REL = path.join('dsh-client-ui-slots', 'lib', 'index.js');
 const SLOT_UNKEYED_COMPAT_PKG_REL = path.join('dsh-cordis-client-runner', 'lib', 'client.js');
 const SLOT_COMPAT_PKG_RELS = [SLOT_KEY_COMPAT_PKG_REL, SLOT_UNKEYED_COMPAT_PKG_REL];
 const PW_REL = path.join('dsh-tool-pwsh', 'lib', 'index.js');
 const BASH_REL = path.join('dsh-tool-bash', 'lib', 'index.js');
+// run_code（code 模式）工具定义在引擎包 dsh-tools/lib/index.js：其 description
+// 参数与 shell 工具同构（required:true + execute 内 args.description.trim() 校验），
+// 模型省略时同样抛 missing required property → 与 shell-description-compat 共靶。
+const DSHTOOLS_REL = path.join('dsh-tools', 'lib', 'index.js');
+// 持久 shell（pwsh / bash persistent）与其 PTY 后端的停止修复补丁目标。
+const PWSH_PERSIST_REL = path.join('dsh-tool-pwsh-persistent', 'lib', 'index.js');
+const BASH_PERSIST_REL = path.join('dsh-tool-bash-persistent', 'lib', 'index.js');
+const PERSISTENT_SHELL_PKG_RELS = [PWSH_PERSIST_REL, BASH_PERSIST_REL];
+const TERMINAL_BASH_REL = path.join('dsh-terminal-bash', 'lib', 'index.js');
 const CODE_PRESET_REL = path.join('dsh', 'config', 'agent-presets', 'code', 'agent.cordis.yml');
 const ATTACH_LOCAL_REL = path.join('dsh-attachment-local', 'lib', 'index.js');
+// R7：adapter prepareCall 守卫补丁目标（dsh-llm）：LlmRuntime.prepareCall /
+// adapterStream 所在入口（0.1.1-rc.2 起新增 adapter.prepareCall 契约调用点）。
+const LLM_PKG_REL = path.join('dsh-llm', 'lib', 'index.js');
+// loader 自动隔离补丁目标（cordis-plugin-loader 是 @deepseek-ai scope 下的包）。
+const LOADER_PKG_REL = path.join('cordis-plugin-loader', 'lib', 'index.js');
+const APP_BOOT_PKG_REL = path.join('dsh-app-boot', 'lib', 'index.js');
+// agent-preset 未知 id 回落补丁目标（dsh-agent-presets）：lib/index.js 是运行时
+// 经 exports "." 实际加载的入口；lib/invariant.js 为同源产物（锚点文本一致），
+// 无人加载但一并覆盖，防未来消费方走 /invariant 出口时漏保护。
+const AGENT_PRESET_FALLBACK_PKG_RELS = [
+  path.join('dsh-agent-presets', 'lib', 'index.js'),
+  path.join('dsh-agent-presets', 'lib', 'invariant.js'),
+];
+// prompt 插值 name-invalid 字面透传补丁目标（dsh-system-prompt）：lib/index.js
+// 是运行时经 exports "." 实际加载的入口（interpolate() 所在，锚点 :117-118）。
+// lib/invariant.js 只做注册期变量名/section 名校验（fail() 静默抛），无插值
+// 分支，不覆盖。
+const PROMPT_CONTEXT_LITERAL_PKG_RELS = [
+  path.join('dsh-system-prompt', 'lib', 'index.js'),
+];
+// api-gateway 缺席指引补丁目标（dsh-client-connection）：lib/index.js 是运行时
+// 经 exports "." 实际加载的唯一入口（/api 前缀路由 + fallback fetch 所在），
+// apply() 的 apiProxy 缺席分支即锚点。
+const API_GATEWAY_ABSENT_PKG_REL = path.join('dsh-client-connection', 'lib', 'index.js');
+// #154 第三根因：内核 web UI boot 看门狗补丁目标——dsh-web-frontend 的
+// index.html（dist 是内核 Web 服务器实际托管的面；client-compat.js 也注入
+// 同一 dist，说明这是可补丁的落点）。
+const KERNEL_WEB_INDEX_REL = path.join('dsh-web-frontend', 'dist', 'index.html');
+// W1 问题四（WSL 目录选择器误判 native）补丁目标：adaptive 选择器的
+// resolver 所在入口（resolveDirectoryPickerBackend 锚点 :65）。
+const PICKER_AUTO_PKG_REL = path.join('dsh-host-directory-picker-auto', 'lib', 'index.js');
+// Codex CLI 本地二进制回落补丁目标（@openai/codex/bin/codex.js）：非 @deepseek-ai
+// scope，pkgRel 含完整 scope 前缀，配套下方 mkPkg 的 scope-agnostic 布局。
+const CODEX_BIN_PKG_REL = path.join('@openai', 'codex', 'bin', 'codex.js');
+// pi-ai openai-completions 路由（4xx 诊断落盘补丁目标；scope-agnostic 布局）。
+const PI_AI_COMPLETIONS_PKG_REL = path.join('@earendil-works', 'pi-ai', 'dist', 'api', 'openai-completions.js');
+// 官方 DeepSeek API 适配器（deepseek-official 路由，不走 pi-ai）。@deepseek-ai
+// scope 布局：pkgRel 相对 @deepseek-ai（与 CLAUDE_SUBAGENT_PKG_REL 等一致），
+// 由 mkAi 的 runtime-local/guard/wsl 布局补 scope 前缀。曾误含 '@deepseek-ai'
+// 段 → node_modules/@deepseek-ai/@deepseek-ai/... 双重前缀 → 补丁 0 命中。
+const DS_LLM_DEEPSEEK_PKG_REL = path.join('dsh-llm-deepseek', 'lib', 'index.js');
+// Claude Code 子代理适配器补丁目标（@deepseek-ai scope，pkgRel 相对 @deepseek-ai，
+// 与其它 PKG_REL 常量一致）。
+const CLAUDE_SUBAGENT_PKG_REL = path.join('dsh-subagent-claude-code', 'lib', 'index.js');
+// skill 目录兼容补丁目标（dsh-skill-filesystem）：FileSystemSkillProvider 的
+// 构造器（customSkillDirs 装配）与 roots()（user 根清单）所在入口，即运行时
+// 经 exports "." 实际加载的技能发现 provider。
+const SKILL_FS_PKG_REL = path.join('dsh-skill-filesystem', 'lib', 'index.js');
 
 /** @deepseek-ai/<pkgRel> 落点（以 node_modules/@deepseek-ai 根为准）。 */
 function mkAi(root, pkgRel) {
   return path.join(root, 'node_modules', '@deepseek-ai', pkgRel);
+}
+
+/** node_modules 任意 scope 包内相对路径（pkgRel 已含 scope 前缀，如 @openai/codex/...）。 */
+function mkPkg(root, pkgRel) {
+  return path.join(root, 'node_modules', pkgRel);
 }
 
 /**
@@ -50,11 +141,26 @@ const LAYOUTS = {
     mkAi(ctx.appDir, spec.pkgRel),
     mkAi(path.join(ctx.userDataDir, 'agent'), spec.pkgRel),
   ],
+  // 通用 node_modules 包文件布局（scope-agnostic）：非 @deepseek-ai scope 的
+  // 桌面独有依赖（如 @openai/codex）落点（pkgRel 已含 scope 前缀，与 mkPkg
+  // 配套）；三副本同 runtime-local。
+  'runtime-local-nm': (ctx, spec) => [
+    mkPkg(path.join(ctx.home, 'profiles'), spec.pkgRel),
+    mkPkg(ctx.appDir, spec.pkgRel),
+    mkPkg(path.join(ctx.userDataDir, 'agent'), spec.pkgRel),
+  ],
   // 防护类补丁四副本：app 优先 + overlay 嵌套 dsh + profile fallback。
   'guard': (ctx, spec) => [
     mkAi(ctx.appDir, spec.pkgRel),
     mkAi(path.join(ctx.userDataDir, 'agent'), spec.pkgRel),
     mkAi(path.join(ctx.userDataDir, 'agent', 'node_modules', '@deepseek-ai', 'dsh'), spec.pkgRel),
+    mkAi(path.join(ctx.home, 'profiles'), spec.pkgRel),
+  ],
+  // 内核 Web UI dist 补丁（#154 前端兜底）：dist 目录只存在于 app 内置副本
+  // 与 agent overlay（Web 组合由内核 dsh-web-app 的 frontend-static 托管）。
+  'web-frontend-dist': (ctx, spec) => [
+    mkAi(ctx.appDir, spec.pkgRel),
+    mkAi(path.join(ctx.userDataDir, 'agent'), spec.pkgRel),
     mkAi(path.join(ctx.home, 'profiles'), spec.pkgRel),
   ],
   // WSL：profile fallback + agent（UNC 写穿）。
@@ -177,15 +283,41 @@ function slotCompatPatchTargets(home) {
 module.exports = {
   LAYOUTS,
   FLASH_PKG_REL,
+  SESSION_CTRL_INDEX_PKG_REL,
+  GATEWAY_CLIENT_PKG_REL,
+  UI_CHAT_CLIENT_PKG_REL,
+  API_SETTINGS_CONTROLLER_PKG_REL,
+  CONVERSATION_PKG_REL,
+  SKILL_UI_PKG_REL,
+  WORKSPACE_PKG_REL,
   EXPOSE_PKG_REL,
   PERSISTENCE_PKG_REL,
+  SESSION_PERSISTENCE_CORE_PKG_REL,
   SLOT_KEY_COMPAT_PKG_REL,
   SLOT_UNKEYED_COMPAT_PKG_REL,
   SLOT_COMPAT_PKG_RELS,
   PW_REL,
   BASH_REL,
+  DSHTOOLS_REL,
+  PWSH_PERSIST_REL,
+  BASH_PERSIST_REL,
+  PERSISTENT_SHELL_PKG_RELS,
+  TERMINAL_BASH_REL,
   CODE_PRESET_REL,
   ATTACH_LOCAL_REL,
+  LLM_PKG_REL,
+  LOADER_PKG_REL,
+  APP_BOOT_PKG_REL,
+  AGENT_PRESET_FALLBACK_PKG_RELS,
+  PROMPT_CONTEXT_LITERAL_PKG_RELS,
+  API_GATEWAY_ABSENT_PKG_REL,
+  KERNEL_WEB_INDEX_REL,
+  PICKER_AUTO_PKG_REL,
+  CODEX_BIN_PKG_REL,
+  PI_AI_COMPLETIONS_PKG_REL,
+  DS_LLM_DEEPSEEK_PKG_REL,
+  CLAUDE_SUBAGENT_PKG_REL,
+  SKILL_FS_PKG_REL,
   resolvePatchTargets,
   resolveNmRoots,
   // 兼容期旧签名（一个版本周期后删除）。

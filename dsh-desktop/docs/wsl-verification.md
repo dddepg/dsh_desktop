@@ -21,12 +21,16 @@
    npm install
    npm run fetch-runtime     # 内置 node.exe + npm CLI
    ```
-2. 开发模式启动（验证用，带调试日志）：
+2. 开发模式启动（验证用，带诊断探针）——运行入口在**桌面壳侧**，`dsh-desktop/` 无 `start` 脚本：
    ```powershell
-   $env:DSH_DESKTOP_DEBUG = '1'
-   npm start
+   cd ..\dsh-tauri\src-tauri\src\app
+   $env:DSH_TAURI_DIAG = '1'   # 换页后注入页面探针（dialog/composer/console 回传 app.log）
+   cargo run
    ```
-   或打包便携版后双击验证：`npm run dist` → `dist/DSH-Desktop-*-win-portable-x64.exe`。
+   或打包安装版后双击验证（打包三步见 `dsh-tauri/README.md` 快速上手 / `docs/development.md` §6）：
+   产物在 `dsh-tauri/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/DSH Desktop_<ver>_x64-setup.exe`。
+   WSL 回落的人工复现：`DSH_TAURI_WSL_EXE=<桩路径>` 可把 `wsl.exe` 换成桩，用来确定性复现
+   「解析失败 → 回落 local」（同一开关由 Rust `wsl-backend` 与 sidecar `wsl-mode.js` 共用）。
 3. 日志位置：便携版 `data\logs\`，安装版 `%APPDATA%\DSH Desktop\logs\`；菜单「打开日志目录」可直达。关键文件：`desktop.log`（`[wsl]` 前缀行 = WSL 后端动作）、`dsh-web.log`、`update.log`。
 
 ## 2. 分步验证
@@ -35,7 +39,7 @@
 
 - [ ] 不配置任何东西直接启动：窗口加载内置 dsh 的 Web UI（旧行为）；
 - [ ] 「关于 DSH Desktop」显示 agent 版本 + 来源「内置」；
-- [ ] ⋯菜单「检查 dsh 更新」「检查客户端更新」「会话完成通知」「关闭时最小化到托盘」全部可用；
+- [ ] ⋯菜单「检查客户端更新」「会话完成通知」「关闭时最小化到托盘」全部可用；
 - [ ] 退出应用后任务管理器无残留 node/dsh 进程（`taskkill /T` 路径）。
 
 ### 2.2 设置页「WSL 后端」栏
@@ -69,7 +73,7 @@
 
 ### 2.6 自动更新与回退
 
-- [ ] 「检查 dsh 更新」：有新版时弹窗（详情含「WSL 托管模式：安装在 ~/.dsh-desktop/agent」）→ 同意 → WSL 内 npm 安装 → 重启生效；更新后 WSL 内出现 `agent-prev/`；
+- [ ] 内核更新随客户端发版（v0.5.3 起「检查 dsh 更新」npm 内核检查链已退役）：WSL 内 agent 的安装/覆盖由后端在启动/切换 WSL 模式时自动完成（见 2.3 第 4 步），更新后 WSL 内出现 `agent-prev/`；客户端版本升级走 ⋯ 菜单「检查客户端更新」；
 - [ ] 回退演练（可选）：WSL 内 `mv ~/.dsh-desktop/agent ~/.dsh-desktop/agent-broken && mkdir ~/.dsh-desktop/agent` → 重启应用 → 启动失败弹窗出现「回退到上一版本并重试」→ 点回退恢复正常（演练后自行恢复目录）。
 
 ### 2.7 切回 local
@@ -102,7 +106,8 @@ node dsh-desktop/scripts/sync-companion-plugins.js ~/.dsh --with-patches
 
 | 现象 | 处理 |
 | --- | --- |
-| 窗口加载后白屏/加载页停留超 60s 弹失败框 | 看 `dsh-web.log`；多为 localhost 转发不通 → `.wslconfig` 加 `[wsl2] networkingMode=mirrored` 后 `wsl --shutdown` 重启（注意会中断 WSL 内会话） |
+| 窗口加载后白屏/加载页停留超 60s 弹失败框 | 看 `dsh-web.log`；多为 localhost 转发不通 → `.wslconfig` 加 `[wsl2] networkingMode=mirrored` 后重启 WSL（注意会中断 WSL 内会话） |
+| **偶发断线重连、断线时正在输出的回答中断** | 多为 WSL2 NAT 的 localhost 端口转发抖动（睡眠唤醒 / 网络切换 / 虚拟网卡重置）。**判据**：断线时刻 `dsh-web.log` 只有连接错误、**无 `KernelExit`** 即属转发抖动。三层应对：① **根治**——`.wslconfig` 设 `[wsl2] networkingMode=mirrored`（Win11 22H2+）走 localhost 直连；② 壳已加固——探活不再因转发瞬时抖动误杀 WSL 内还活着的内核，等转发恢复后前端自动重连**同一内核**并靠其 durable event 续上输出；③ 极端环境可用 `DSH_WSL_HOST=0.0.0.0` 放宽内核 bind（默认回环，NAT 下需配防火墙放行） |
 | 保存 wsl 配置时报「未检测到 WSL 发行版」 | 确认 `wsl -l -q` 有输出；或显式填 `wslDistro` |
 | 保存报「未找到可用的 node/npm」 | WSL 内装 Node：`sudo apt install nodejs npm` 或 fnm/nvm；注意必须是**登录 shell** 可见（`wsl sh -lc 'node --version'`） |
 | 首次切换后安装很久 | 正常（完整依赖闭包 + Linux 原生模块预编译包）；`desktop.log` 有 `[wsl] npm:` 进度；失败会在日志尾部留 npm 输出 |

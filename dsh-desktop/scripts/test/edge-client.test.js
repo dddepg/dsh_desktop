@@ -42,6 +42,11 @@ function loadClient(bridgeOverrides) {
     document: { querySelector: () => null, createElement: () => ({ dataset: {}, textContent: '' }), head: { appendChild: () => {} } },
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
     console,
+    // client.js 的桥推送超时降级（setTimeout 4s 兜底）在浏览器合法，但 vm
+    // 沙箱默认无定时器 → ReferenceError（T1 实测「单一投递」两用例恒红）。
+    // unref：不清理的挂起定时器不阻塞测试进程退出。
+    setTimeout: (fn, ms, ...args) => { const t = setTimeout(fn, ms, ...args); if (t.unref) t.unref(); return t; },
+    clearTimeout,
   };
   vm.createContext(sandbox);
   vm.runInContext(SRC, sandbox, { filename: 'client.js' });
@@ -90,8 +95,18 @@ function loadClient(bridgeOverrides) {
   });
 
   let dockComponent = null;
+  // dsh-balance 槽注册走 ctx.slots.inject(key, factory)（一方包正确姿势，
+  // 消除「conversation 大 bundle 未就绪时 slots.register 硬抛 slot is not
+  // declared」的冷启动竞态，见 lib/client.js apply 注释）：mock 的 inject
+  // 立即求值 factory，落到与旧 register 相同的捕获路径，断言语义不变。
   const fakeCtx = {
-    slots: { register(slotInfo, Component) { dockComponent = Component; } },
+    slots: {
+      register(slotInfo, Component) { dockComponent = Component; },
+      inject(key, factory) {
+        if (key !== 'conversation.composer.dock') throw new Error('unexpected slot key: ' + key);
+        factory();
+      },
+    },
     effect(cb) { cb(); },
   };
   mod.apply(fakeCtx);
@@ -102,7 +117,7 @@ function loadClient(bridgeOverrides) {
     let result;
     let threw = null;
     try {
-      result = dockComponent({ useProjection: () => usage });
+      result = dockComponent({ useProjection: () => usage, sessionId: opts.sessionId });
     } catch (err) {
       threw = err;
     }
@@ -114,6 +129,17 @@ function loadClient(bridgeOverrides) {
   }
 
   return { calls, listeners, render, runEffects, resetHooks, dock: () => dockComponent, setPresetData: (d) => { presetData = d; } };
+}
+
+/**
+ * 在全新沙箱里渲染一帧（issue #168 后的必需手段）：本轮费用已改为「增量
+ * 计价账本」——同一会话的重复观测不重算历史，所以同一沙箱内用相同累计
+ * 量 + 不同价目二次渲染不再会重新定价。只验单帧取价 / 归一化语义的用例
+ * 应用本助手，避免“靠累加巧合通过”。
+ */
+function renderFresh(usage, data, opts = {}) {
+  const h = loadClient(opts.bridge);
+  return { h, r: h.render(usage, data, opts) };
 }
 
 /** 收集渲染树全部文本。 */
@@ -190,19 +216,19 @@ test('sessionCost: 四桶组合（含缓存写按 miss 价）', () => {
 });
 
 test('sessionCost: 字符串 token 值兼容；非法值（NaN/Infinity/负数）归零且不出负费用', () => {
-  const h = loadClient();
+  // 合法覆盖 / 非法值归零都是「单帧取价」语义，逐帧独立沙箱（见 renderFresh 注释）。
   // 字符串数值
-  let r = h.render({ uncachedInputTokens: '1000000', outputTokens: '0', cacheReadTokens: '0', cacheWriteTokens: '0' }, BALANCE_DATA);
+  let { r } = renderFresh({ uncachedInputTokens: '1000000', outputTokens: '0', cacheReadTokens: '0', cacheWriteTokens: '0' }, BALANCE_DATA);
   assert.strictEqual(costChipText(r), '本轮 ¥3.000');
   // 负数 token → 桶归零 → 无用量 → 不渲染费用（下限保护）
-  r = h.render({ uncachedInputTokens: -1e6, outputTokens: -1e6, cacheReadTokens: -5, cacheWriteTokens: -1 }, BALANCE_DATA);
+  ({ r } = renderFresh({ uncachedInputTokens: -1e6, outputTokens: -1e6, cacheReadTokens: -5, cacheWriteTokens: -1 }, BALANCE_DATA));
   const texts = collectText(r.result);
   assert.ok(!texts.some((t) => String(t).startsWith('本轮')), '负 token 不应产生费用 chip');
   // NaN / Infinity
-  r = h.render({ uncachedInputTokens: NaN, outputTokens: Infinity, cacheReadTokens: 'abc', cacheWriteTokens: null }, BALANCE_DATA);
+  ({ r } = renderFresh({ uncachedInputTokens: NaN, outputTokens: Infinity, cacheReadTokens: 'abc', cacheWriteTokens: null }, BALANCE_DATA));
   assert.ok(!collectText(r.result).some((t) => String(t).startsWith('本轮')), '非法 token 值不应产生费用 chip');
   // 混合：合法桶仍正常计费，非法桶归零
-  r = h.render({ inputTokens: 1e6, outputTokens: 'abc', cacheReadTokens: Infinity, cacheWriteTokens: '2e5' }, BALANCE_DATA);
+  ({ r } = renderFresh({ inputTokens: 1e6, outputTokens: 'abc', cacheReadTokens: Infinity, cacheWriteTokens: '2e5' }, BALANCE_DATA));
   assert.strictEqual(costChipText(r), '本轮 ¥3.600', 'miss=(1M+0.2M)×3=3.6，其余桶归零');
 });
 
@@ -264,13 +290,14 @@ test('纯浏览器降级：无 data 时按 FALLBACK_PRICES 计价', () => {
 });
 
 test('sessionCost: prices 覆盖生效；非法价格字段回退内置默认档', () => {
-  const h = loadClient();
+  // issue #168 后两个分支必须各自独立会话（独立账本）：同一会话里价目切换
+  // 不再重算已入账部分（正是本 issue 的修复点），所以不能再复用同一沙箱。
   const usage = { uncachedInputTokens: 1e6, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
   // 合法覆盖
-  let r = h.render(usage, { prices: { cacheMiss: 1, cacheHit: 0.5, output: 8 } });
+  let { r } = renderFresh(usage, { prices: { cacheMiss: 1, cacheHit: 0.5, output: 8 } });
   assert.strictEqual(costChipText(r), '本轮 ¥1.000');
   // 非法覆盖（NaN/负数）→ 回退默认档（FALLBACK_PRICES，与 deepseek-v4-pro 一致）
-  r = h.render(usage, { prices: { cacheMiss: NaN, cacheHit: -1, output: 8 } });
+  ({ r } = renderFresh(usage, { prices: { cacheMiss: NaN, cacheHit: -1, output: 8 } }));
   assert.strictEqual(costChipText(r), '本轮 ¥9.000');
 });
 

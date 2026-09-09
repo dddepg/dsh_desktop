@@ -34,7 +34,6 @@ const PLUGIN_VERSION = (() => {
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
-import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { createWechatAdapter } from "./channels/wechat.js";
 import { createFeishuAdapter } from "./channels/feishu.js";
@@ -47,14 +46,18 @@ import { qrSvg } from "./core/qrcode.js";
 import { OpenAiCompatAdapter, PROVIDER_ID } from "./openai-compat.js";
 
 const name = "@deepseek-ai/dsh-openclaw-bridge";
-const inject = ["webServer", "agents", "sessions", "agentDefaultModel", "llm"];
+// "settings" 必须在 inject 里：ctx.settings 是 cordis 服务代理，未声明即访问
+// 抛 "cannot get property 'settings' without inject"——apply() 里设置节注册
+// 会永久降级为「设置页读不到/写不进配置」（0.6.x 两份用户日志实爆；
+// 0.7.1 源码有、0.8.0 打包时遭截丢，此处补回）。
+const inject = ["webServer", "agents", "sessions", "agentDefaultModel", "llm", "settings"];
 
 // health 报告的已实现渠道列表；apply() 里按 CHANNEL_TABLE 刷新。
 let implementedChannels = ["wechat"];
 
 // ---- 设置节（DSH 设置页的 ClawBot 栏）----
 // 命名空间 "openclaw-bridge"：用户在设置页保存的配置经 settings 服务热生效。
-const NS = settingsNamespace("openclaw-bridge");
+const NS = "openclaw-bridge";
 const Config = z.object({
   // "provider/model" 或仅 "model"（provider 缺省时沿用 DSH 默认模型的 provider）；
   // 留空 = 使用 DSH 设置的默认模型。
@@ -107,7 +110,9 @@ const TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const POLL_MS = 100;
 
 // ---- 鉴权 token（设置 > 环境变量 > 自动生成并持久化） ----
-const BRIDGE_HOME = join(homedir(), ".dsh", "openclaw-bridge");
+// 跟随 DSH_HOME（与内核/其余插件同口径）：隔离部署/多实例/测试镜像时
+// workspace 不落真实用户目录（真实场景测试 T1 抓到打印真实路径）。
+const BRIDGE_HOME = join(process.env.DSH_HOME || join(homedir(), ".dsh"), "openclaw-bridge");
 let bridgeToken = String(process.env.OPENCLAW_BRIDGE_TOKEN || "").trim();
 if (!bridgeToken) {
   const tokenFile = join(BRIDGE_HOME, "token.txt");
@@ -809,11 +814,21 @@ function apply(ctx, config) {
     return { baseURL: cfg.customBaseURL, apiKey: cfg.customApiKey, model: cfg.customModel };
   });
   const customRegistration = ctx.llm.registerAdapter([PROVIDER_ID], customAdapter);
-  installSettingsSection(ctx, NS, Config, config || {}, {
-    setSource: (source) => {
-      liveConfig = source; // source 是 () => scope.get() 的取值函数
-    },
-    onChange: () => {
+  // alpha.4 迁移：旧的 install 辅助已从 dsh-settings 移除，改为
+  // ctx.settings.register 直注册（ns 裸字符串）+ scope.get 取值 + scope.watch 热更。
+  // 两级降级：携带旧 config 注册失败（0.5.x 旧格式存储解析不过）时，用空 base
+  // 重试一次——设置页从默认值重新开始、热更链路恢复，而不是永久降级为
+  // 「仅环境变量配置」（旧 config 仍在 settings.yaml 里，用户可在设置页重填）。
+  try {
+    let scope;
+    try {
+      scope = ctx.settings.register(NS, Config, { base: config || {} });
+    } catch (baseError) {
+      console.warn("[openclaw-bridge] stored config rejected, retrying with defaults: " + ((baseError && baseError.message) || baseError));
+      scope = ctx.settings.register(NS, Config, { base: {} });
+    }
+    liveConfig = () => scope.get(); // source 是 () => scope.get() 的取值函数
+    scope.watch(() => {
       // 新映射会话（新 model 名）会使用新配置；已有会话保持连续性。
       // 日志脱敏：token/apiKey 不回显明文。
       const cfg = liveConfig() || {};
@@ -822,8 +837,10 @@ function apply(ctx, config) {
       if (redacted.customApiKey) redacted.customApiKey = "***";
       if (redacted.feishuAppSecret) redacted.feishuAppSecret = "***";
       console.log("[openclaw-bridge] settings updated: " + JSON.stringify(redacted));
-    },
-  });
+    });
+  } catch (error) {
+    console.warn("[openclaw-bridge] settings section unavailable (settings service absent): " + ((error && error.message) || error));
+  }
   const disposeChat = ctx.webServer.register({ kind: "exact", path: CHAT_ROUTE, handler: (req, res) => handleChat(ctx, req, res) });
   const disposeHealth = ctx.webServer.register({
     kind: "exact",

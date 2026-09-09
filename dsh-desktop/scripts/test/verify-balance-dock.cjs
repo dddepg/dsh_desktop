@@ -70,6 +70,11 @@ const sandbox = {
   document: { querySelector: () => null, createElement: () => ({ dataset: {}, textContent: '' }), head: { appendChild: () => {} } },
   CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
   console,
+  // client.js 桥推送 4s 超时降级合法使用 setTimeout——vm 沙箱默认无定时器
+  // → ReferenceError（与 edge-client.test.js 同款测试床缺口，CI 独立校验器
+  // 在此步骤崩掉即 main CI 变红的真因）。unref：不阻塞进程退出。
+  setTimeout: (fn, ms, ...args) => { const t = setTimeout(fn, ms, ...args); if (t.unref) t.unref(); return t; },
+  clearTimeout,
 };
 vm.createContext(sandbox);
 vm.runInContext(src, sandbox, { filename: 'client.js' });
@@ -83,13 +88,23 @@ const mod = capturedLoad.factory((name) => {
 if (typeof mod.apply !== 'function') throw new Error('exports.apply 缺失');
 
 // ---------- 通过 slots 注册捕获 BalanceDock ----------
+// dsh-balance 槽注册走 ctx.slots.inject(key, factory)（一方包正确姿势，
+// 消除 conversation bundle 未就绪时 slots.register 硬抛竞态，见
+// assets/plugins/dsh-balance/lib/client.js apply 注释）：mock 的 inject
+// 立即求值 factory，捕获路径与旧 register 等价。
 let dockComponent = null;
 const fakeCtx = {
-  slots: { register(slotInfo, Component) { dockComponent = Component; } },
+  slots: {
+    register(slotInfo, Component) { dockComponent = Component; },
+    inject(key, factory) {
+      if (key !== 'conversation.composer.dock') throw new Error('unexpected slot key: ' + key);
+      factory();
+    },
+  },
   effect(cb) { cb(); },
 };
 mod.apply(fakeCtx);
-if (typeof dockComponent !== 'function') throw new Error('未能从 slots.register 捕获 BalanceDock');
+if (typeof dockComponent !== 'function') throw new Error('未能从 slots.inject/register 捕获 BalanceDock');
 
 // ---------- 渲染驱动器：preset 为「事件已推送」的状态数据 ----------
 function renderDock(data, usage) {
@@ -196,6 +211,28 @@ console.log('场景5：disabled 配置（用户关闭显示）→ 隐藏');
   const r = renderDock({ ok: false, disabled: true }, { outputTokens: 100, uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
   check('不抛异常', r.threw === null, r.threw ? r.threw.message : '');
   check('渲染 null（整体隐藏）', r.result === null);
+}
+
+console.log('场景6：余额 dock 点击路由形态（外链点击委托 K15 依赖的 <a> 属性契约）');
+{
+  const data = {
+    ok: true, peak: false,
+    balances: [{ currency: 'CNY', total: 88.5, granted: 10, toppedUp: 78.5 }],
+    prices: { cacheMiss: 3, cacheHit: 0.1, output: 9 },
+    opencodeGo: { ok: true, usage: { rolling: { status: 'ok', percent: 14, resetsAt: '' } } },
+  };
+  const r = renderDock(data, { outputTokens: 0, uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  check('不抛异常', r.threw === null, r.threw ? r.threw.message : '');
+  const wrapper = r.result;
+  check('顶层 wrapper 为 dsh-balance-wrap span', wrapper && wrapper.type === 'span' && wrapper.props.className === 'dsh-balance-wrap');
+  const dock = wrapper && Array.isArray(wrapper.props.children) && wrapper.props.children[0];
+  const goDock = wrapper && Array.isArray(wrapper.props.children) && wrapper.props.children[1];
+  check('余额 dock 为 <a>（class=dsh-balance-dock）', dock && dock.type === 'a' && dock.props.className === 'dsh-balance-dock');
+  check('余额 dock href = top_up（外链充值页）', dock && dock.props.href === 'https://platform.deepseek.com/top_up', dock && dock.props.href);
+  check('余额 dock target=_blank（点击委托拦截信号）', dock && dock.props.target === '_blank');
+  check('余额 dock rel 含 noopener', dock && typeof dock.props.rel === 'string' && dock.props.rel.indexOf('noopener') !== -1, dock && dock.props.rel);
+  check('Go dock href = opencode.ai', goDock && goDock.type === 'a' && goDock.props.href === 'https://opencode.ai', goDock && goDock.props.href);
+  check('Go dock target=_blank', goDock && goDock.props.target === '_blank');
 }
 
 console.log('\n' + (failures === 0 ? '🎉 全部断言通过' : '❌ ' + failures + ' 项失败'));

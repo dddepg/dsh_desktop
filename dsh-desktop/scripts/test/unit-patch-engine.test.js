@@ -20,21 +20,24 @@ const { spawnSync } = require('node:child_process');
 const { writeFileAtomic, readFileCached } = require('../lib/patch-io');
 const { applyPatchToFiles } = require('../lib/patch-engine');
 const {
-  FLASH_OLD, FLASH_NEW, SETTINGS_NAMESPACES,
-  FLASH_PKG_REL, EXPOSE_PKG_REL, patchTargets,
+  FLASH_OLD, FLASH_NEW,
+  FLASH_PKG_REL, patchTargets,
   localCopyFiles, guardCopyFiles, localNodeModulesRoots,
   slotCompatCopyFiles, slotCompatPatchTargets,
-  transformFlashFix, transformExposeFix,
-  SHELL_DESC_MARKER, SHELL_DESC_VALIDATE_OLD, SHELL_DESC_VALIDATE_NEW, PW_REL, BASH_REL, transformShellDescriptionOptional,
-  CODE_MODE_MARKER, CODE_MODE_OLD, CODE_MODE_NEW, CODE_PRESET_REL, transformCodeModeCompat,
+  transformFlashFix,
+  SHELL_DESC_MARKER, SHELL_DESC_VALIDATE_OLD, SHELL_DESC_VALIDATE_NEW,
+  SHELL_DESC_SCHEMA_OLD, SHELL_DESC_SCHEMA_OPTIONAL, PW_REL, BASH_REL, transformShellDescriptionOptional,
+  RUNCODE_DESC_MARKER, RUNCODE_SCHEMA_OLD, RUNCODE_SCHEMA_OPTIONAL, RUNCODE_VALIDATE_OLD, RUNCODE_VALIDATE_NEW,
   ATTACH_MIME_MARKER, ATTACH_MIME_OLD, ATTACH_MIME_NEW, ATTACH_LOCAL_REL, transformAttachmentMimeTrust,
   SLOT_KEY_COMPAT_PKG_REL, SLOT_UNKEYED_COMPAT_PKG_REL,
   SLOT_KEY_COMPAT_MARKER, SLOT_KEY_COMPAT_OLD, SLOT_KEY_COMPAT_NEW, transformLegacySlotKey,
   SLOT_UNKEYED_COMPAT_MARKER, SLOT_UNKEYED_COMPAT_OLD, SLOT_UNKEYED_COMPAT_NEW, transformSlotUnkeyedCompat,
 } = require('../lib/runtime-patches');
 const { COMPANION_PLUGINS, companionDirName } = require('../lib/companion-plugins');
+const { DSHTOOLS_REL } = require('../lib/patch-target-resolver');
 const {
   PATCH_HEADER, ACP_DISABLE_BLOCK, PET_DISABLE_BLOCK,
+  ACP_SELF_DISABLE_BLOCK, removeAcpBasicDisableBlock,
   ensureDisabledPatchEntry, removeLegacyMarketplacePatchLines,
   registerCompanionPatchEntries, syncCompanionFiles, removedPluginIdsFromPatch,
 } = require('../lib/companion-profile');
@@ -177,45 +180,6 @@ test('runtime-patches: 闪跳变换 already/失配/changed 字节级正确', () 
   assert.ok(!out.src.includes(FLASH_OLD) && out.src.includes(FLASH_NEW));
 });
 
-test('runtime-patches: 白名单变换 声明缺失/收尾缺失/部分缺失/已应用/尾逗号数组', () => {
-  const file = 'C:\\x\\index.js';
-  assert.deepStrictEqual(transformExposeFix('export const x = 1;', file), {
-    status: 'anchor-missing',
-    detail: '未找到 WEB_SETTINGS_NAMESPACES（版本可能已变更），跳过 ' + file,
-  });
-  assert.deepStrictEqual(
-    transformExposeFix('namespaces: settings.describe({ redactSecrets: true }).map(namespaceView)', file),
-    { status: 'already' },
-    'rc.7 动态设置描述已原生支持插件命名空间',
-  );
-  // 声明存在但缺少 `];` 收尾 → anchor-missing（收尾缺失）
-  assert.deepStrictEqual(
-    transformExposeFix('const WEB_SETTINGS_NAMESPACES = [\n\t"a"\n', file),
-    { status: 'anchor-missing', detail: '未匹配到命名空间数组收尾，跳过 ' + file }
-  );
-  const src = 'const WEB_SETTINGS_NAMESPACES = [\n\t"dsh-prompt"\n];\nrest();';
-  const out = transformExposeFix(src, file);
-  assert.strictEqual(out.status, 'changed');
-  assert.deepStrictEqual(out.note, ['dsh-third-party-thinking', 'dsh-vision', 'dsh-conversation-tweaks']);
-  const expectedBlock = ',\n' + out.note.map((ns) => '\t"' + ns + '"').join(',\n') + '\n';
-  assert.strictEqual(out.src, src.slice(0, src.indexOf('];')) + expectedBlock + src.slice(src.indexOf('];')), '插入格式与旧实现逐字节一致');
-  assert.deepStrictEqual(transformExposeFix(out.src, file), { status: 'already' }, '二次应用幂等');
-  // 原数组带尾逗号（",\n];"）：不得产生 ",", 双逗号语法错误（历史缺陷）。
-  const trailing = 'const WEB_SETTINGS_NAMESPACES = [\n\t"dsh-prompt",\n];\nrest();';
-  const outT = transformExposeFix(trailing, file);
-  assert.strictEqual(outT.status, 'changed');
-  assert.ok(!outT.src.includes(',\n,') && !outT.src.includes(',\n\n,'), '不得出现双逗号');
-  const expectedT = ',\n' + outT.note.map((ns) => '\t"' + ns + '"').join(',\n') + '\n';
-  const rebuiltT = trailing.slice(0, trailing.indexOf('];')) + expectedT.replace(/^,\n/, '\n') + trailing.slice(trailing.indexOf('];'));
-  assert.strictEqual(outT.src, rebuiltT, '尾逗号形态只省略前导逗号，其余字节一致');
-  // 产物必须仍是合法 JS 数组文本（简单语法校验：括号配平 + 无空槽）
-  const arrOnly = outT.src.slice(outT.src.indexOf('['), outT.src.indexOf('];') + 2);
-  assert.ok(!/,\s*,/.test(arrOnly), '数组内不得有空槽');
-  // 真实 vendored 文件：已应用状态
-  const real = path.join(repoRoot, 'node_modules', '@deepseek-ai', EXPOSE_PKG_REL);
-  assert.strictEqual(transformExposeFix(fs.readFileSync(real, 'utf8'), real).status, 'already', 'vendored 副本应判定为已应用');
-});
-
 test('runtime-patches: WSL/CLI 目标路径约定', () => {
   const home = 'C:\\home';
   const rel = path.join('dsh-client-runtime', 'lib', 'client.js');
@@ -223,9 +187,9 @@ test('runtime-patches: WSL/CLI 目标路径约定', () => {
     path.join(home, 'profiles', 'node_modules', '@deepseek-ai', rel),
     path.join(home, 'agent', 'node_modules', '@deepseek-ai', rel),
   ]);
-  assert.strictEqual(FLASH_PKG_REL, path.join('dsh-client-runtime', 'lib', 'client.js'));
-  assert.strictEqual(EXPOSE_PKG_REL, path.join('dsh-host-apiproxy', 'lib', 'index.js'));
-  assert.deepStrictEqual(SETTINGS_NAMESPACES, ['dsh-prompt', 'dsh-third-party-thinking', 'dsh-vision', 'dsh-conversation-tweaks']);
+  // 0.1.2-alpha.1：dsh-client-runtime 分解为 dsh-api-session-controller，
+  // 闪跳修复（mergeOrderedBaseline 保留本地新会话）落点迁至 session-controller。
+  assert.strictEqual(FLASH_PKG_REL, path.join('dsh-api-session-controller', 'lib', 'client.js'));
 });
 
 test('runtime-patches: 候选路径构造器（本地三副本/防护四副本/WSL agent 直连根）', () => {
@@ -260,34 +224,45 @@ test('runtime-patches: 候选路径构造器（本地三副本/防护四副本/W
   ]);
 });
 
+// 把 dev node_modules 里可能已打过补丁的 shell 工具源还原为官方形态（validate +
+// schema 两处都回退），供变换单测从确定起点验证。
+function pristineShellSrc(live) {
+  let s = live;
+  if (s.includes(SHELL_DESC_VALIDATE_NEW)) s = s.replace(SHELL_DESC_VALIDATE_NEW, SHELL_DESC_VALIDATE_OLD);
+  if (s.includes(SHELL_DESC_SCHEMA_OPTIONAL)) s = s.replace(SHELL_DESC_SCHEMA_OPTIONAL, SHELL_DESC_SCHEMA_OLD);
+  return s;
+}
+
 test('tool-compat: shell description 兜底变换（真实 vendored 文件 + 幂等）', () => {
   for (const rel of [PW_REL, BASH_REL]) {
     const file = path.join(repoRoot, 'node_modules', '@deepseek-ai', rel);
-    const src0 = fs.readFileSync(file, 'utf8');
-    // dev node_modules 可能已被运行时补丁打过：先还原为官方源再验证变换本身。
-    const src = src0.includes(SHELL_DESC_VALIDATE_NEW) ? src0.replace(SHELL_DESC_VALIDATE_NEW, SHELL_DESC_VALIDATE_OLD) : src0;
+    const src = pristineShellSrc(fs.readFileSync(file, 'utf8'));
     const out = transformShellDescriptionOptional(src, file);
     assert.strictEqual(out.status, 'changed', rel + ' 应可补丁');
-    assert.ok(out.src.includes(SHELL_DESC_MARKER), rel + ' 应写入幂等标记');
-    assert.ok(out.src.includes('required: true'), rel + ' 的 schema description 必须保持 required: true（引擎校验器拒绝 false）');
-    assert.ok(!out.src.includes('required: false'), rel + ' 不得写入 required: false');
+    assert.ok(out.src.includes(SHELL_DESC_MARKER), rel + ' 应写入幂等标记（validate 兜底）');
+    assert.ok(out.src.includes(SHELL_DESC_SCHEMA_OPTIONAL), rel + ' description 应改为可选（删除 required: true 行）');
+    assert.ok(!out.src.includes(SHELL_DESC_SCHEMA_OLD), rel + ' 不得残留 description 的 required: true 块');
+    assert.ok(!out.src.includes('required: false'), rel + ' 不得写入 required: false（引擎定义期即拒）');
+    assert.ok(out.src.includes('required: true'), rel + ' command 等其它参数仍须保持 required: true');
     assert.ok(out.src.includes('args.description = args.command.trim().split'), rel + ' 缺省 description 应从 command 生成');
     assert.ok(!/split\(\/\r?\n\/\)/.test(out.src), rel + ' 生成的正则不得含真换行（转义回归）');
     assert.deepStrictEqual(transformShellDescriptionOptional(out.src, file), { status: 'already' }, rel + ' 二次应用应幂等');
   }
 });
 
-test('tool-compat: shell description 旧 schema 补丁（required: false）自动回滚', () => {
+test('tool-compat: shell description 历史误写（required: false）收敛为删除该行', () => {
   const file = path.join(repoRoot, 'node_modules', '@deepseek-ai', PW_REL);
-  const src = fs.readFileSync(file, 'utf8');
+  const src = pristineShellSrc(fs.readFileSync(file, 'utf8'));
   const legacy = src.replace(
     '\t\t\t\trequired: true,\n\t\t\t\tdescription: "Clear, concise description',
     '\t\t\t\trequired: false, // dsh-desktop compat: optional shell description\n\t\t\t\tdescription: "Clear, concise description'
   );
+  assert.notStrictEqual(legacy, src, '应成功构造历史 required:false 形态');
   const out = transformShellDescriptionOptional(legacy, file);
-  assert.strictEqual(out.status, 'changed', '含旧 false 补丁时应回滚');
-  assert.ok(out.src.includes('required: true'), '回滚后 schema 应恢复 required: true');
-  assert.ok(!out.src.includes('required: false'), '回滚后不得残留 required: false');
+  assert.strictEqual(out.status, 'changed', '含历史 false 误写时应收敛为可选');
+  assert.ok(!out.src.includes('required: false'), '收敛后不得残留 required: false');
+  assert.ok(out.src.includes(SHELL_DESC_SCHEMA_OPTIONAL), '收敛后 description 应为可选形态');
+  assert.ok(!out.src.includes(SHELL_DESC_SCHEMA_OLD), '收敛后不得残留 required: true 块');
 });
 
 test('tool-compat: shell description 锚点缺失时跳过且不改写', () => {
@@ -295,29 +270,24 @@ test('tool-compat: shell description 锚点缺失时跳过且不改写', () => {
   const out = transformShellDescriptionOptional('export const x = 1;', file);
   assert.deepStrictEqual(out, {
     status: 'anchor-missing',
-    detail: '未找到 shell description 锚点（版本可能已变更），跳过 ' + file,
+    detail: '未找到 shell/run_code description 锚点（版本可能已变更），跳过 ' + file,
   });
 });
 
-test('tool-compat: code preset code→both 变换（真实 vendored 文件 + 幂等）', () => {
-  const file = path.join(repoRoot, 'node_modules', '@deepseek-ai', CODE_PRESET_REL);
-  const src0 = fs.readFileSync(file, 'utf8');
-  const src = src0.includes(CODE_MODE_MARKER) ? src0.replace(CODE_MODE_NEW, CODE_MODE_OLD) : src0;
-  const out = transformCodeModeCompat(src, file);
-  assert.strictEqual(out.status, 'changed');
-  assert.ok(out.src.includes(CODE_MODE_MARKER), '应写入幂等标记');
-  assert.ok(out.src.includes('    mode: both'), 'mode 应切换为 both');
-  assert.ok(!out.src.includes('    mode: code'), '原 mode: code 不得残留');
-  assert.deepStrictEqual(transformCodeModeCompat(out.src, file), { status: 'already' }, '二次应用应幂等');
-});
-
-test('tool-compat: code preset 锚点缺失时跳过且不改写', () => {
-  const file = path.join('C:', 'x', 'code.yml');
-  const out = transformCodeModeCompat(['- id: tool-presentation', '  name: other', ''].join(String.fromCharCode(10)), file);
-  assert.deepStrictEqual(out, {
-    status: 'anchor-missing',
-    detail: '未找到 code preset 的 tool-presentation 锚点（版本可能已变更），跳过 ' + file,
-  });
+test('tool-compat: run_code description 兜底变换（真实 dsh-tools + 双 schema 块 + 幂等）', () => {
+  const file = path.join(repoRoot, 'node_modules', '@deepseek-ai', DSHTOOLS_REL);
+  let src = fs.readFileSync(file, 'utf8');
+  // 还原官方形态（两处 required:true schema + 旧 trim 校验），从确定起点验证。
+  src = src.split(RUNCODE_SCHEMA_OPTIONAL).join(RUNCODE_SCHEMA_OLD);
+  src = src.split(RUNCODE_VALIDATE_NEW).join(RUNCODE_VALIDATE_OLD);
+  const out = transformShellDescriptionOptional(src, file);
+  assert.strictEqual(out.status, 'changed', 'dsh-tools run_code 应可补丁');
+  assert.ok(out.src.includes(RUNCODE_DESC_MARKER), '应写入 run_code 幂等标记');
+  assert.strictEqual(out.src.split(RUNCODE_SCHEMA_OLD).length - 1, 0, '两处 required:true 块都应消除');
+  assert.strictEqual(out.src.split(RUNCODE_SCHEMA_OPTIONAL).length - 1, 2, '两处 description 都应改为可选');
+  assert.ok(out.src.includes('args.description = args.code.trim().split'), '缺省 description 应从 code 首行生成');
+  assert.ok(out.src.includes('code: {' + '\n' + '\t\t\t\ttype: "string",' + '\n' + '\t\t\t\trequired: true'), 'code 仍须保持 required: true');
+  assert.deepStrictEqual(transformShellDescriptionOptional(out.src, file), { status: 'already' }, '二次应用应幂等');
 });
 
 test('tool-compat: attachment 图片字节信任变换（真实 vendored 文件 + 幂等）', () => {
@@ -378,6 +348,10 @@ test('runtime-patches: keyed slot 兼容补丁产物可被 node --check 解析',
   ];
   for (const c of cases) {
     const file = path.join(repoRoot, 'node_modules', '@deepseek-ai', c.rel);
+    // rc.8 起 dsh-client-ui-slots 并入前端 dist 产物（node_modules 不再落盘），
+    // 该文件缺失属正常布局：本用例依赖真实文件做语法回归，缺失时跳过该条
+    // （rc.8 布局下此补丁无目标，注册链路由 runner 侧 unkeyed 补丁覆盖）。
+    if (!fs.existsSync(file)) { t.skip(c.rel + ' 不存在（dsh rc.8+ 布局）'); continue; }
     const src0 = fs.readFileSync(file, 'utf8');
     const src = src0.includes(c.newText) ? src0.replace(c.newText, c.oldText) : src0;
     const out = c.transform(src, file);
@@ -411,17 +385,18 @@ test('runtime-patches: keyed slot 兼容覆盖顶层与 dsh 嵌套依赖副本',
 test('companion-plugins: 既有前缀顺序与 workspace-anchor 位置唯一（漂移防线）', () => {
   const ids = COMPANION_PLUGINS.map((p) => p.id);
   assert.deepStrictEqual(
-    ids.slice(0, 19),
+    ids.slice(0, 18),
     [
       'balance', 'file-changes', 'client-file-changes', 'terminal',
-      'better-sidebar', 'harness-pet', 'float-window', 'dsh-navbar', 'dsh-session-manager',
-      'conversation-tweaks', 'quest-ui', 'dsh-super-injector', 'prompt-custom', 'workspace-anchor',
-      'third-party-thinking', 'wsl-settings', 'dsh-vision', 'side-session',
-      'compaction-acp',
+      'better-sidebar', 'harness-pet', 'dsh-navbar', 'dsh-session-manager',
+      'conversation-tweaks',
+      'quest-ui', 'dsh-super-injector', 'prompt-custom', 'workspace-anchor',
+      'wsl-settings', 'dsh-vision', 'side-session', 'compaction-acp',
+      'plugin-manager',
     ],
     '既有前缀顺序不得漂移（新增/改名须同步更新本测试）'
   );
-  assert.strictEqual(ids.indexOf('workspace-anchor'), 13, 'workspace-anchor 应固定在 prompt-custom 之后');
+  assert.strictEqual(ids.indexOf('workspace-anchor'), 12, 'workspace-anchor 应固定在 prompt-custom 之后');
   assert.strictEqual(ids.filter((id) => id === 'workspace-anchor').length, 1, 'workspace-anchor 不得重复');
   assert.strictEqual(companionDirName({ name: '@deepseek-ai/dsh-balance' }), 'dsh-balance');
   assert.strictEqual(companionDirName({ name: 'harness-pet' }), 'harness-pet');
@@ -452,6 +427,28 @@ test('ensureDisabledPatchEntry: 已存在/[] 形态/空文件/追加 四种形�
   assert.strictEqual(appended.patch, base.replace(/\s*$/, '\n') + ACP_DISABLE_BLOCK);
 });
 
+
+test('removeAcpBasicDisableBlock: 精确撤销自动块、尊重用户手写、幂等', () => {
+  const idRe = (id) => new RegExp('(?:^|\\n)\\s*-?\\s*id\\s*:\\s*' + id + '\\b');
+  const base = '# dsh web profile patch（由 DSH Desktop 维护）\n- id: harness-pet\n  disabled: true\n';
+  // 旧路径追加一段自动 compaction-basic 禁用块，再用 heal 撤销 → 保留无关条目。
+  const auto = ensureDisabledPatchEntry(base, idRe('compaction-basic'), ACP_DISABLE_BLOCK);
+  assert.strictEqual(auto.changed, true);
+  assert.ok(auto.patch.includes('- id: compaction-basic\n  disabled: true'));
+  const healed = removeAcpBasicDisableBlock(auto.patch);
+  assert.strictEqual(healed.changed, true);
+  assert.ok(!healed.patch.includes('- id: compaction-basic'), 'compaction-basic 禁用块应被撤销');
+  assert.ok(healed.patch.includes('- id: harness-pet\n  disabled: true'), '无关条目不得被误删');
+  // 幂等：块已不在位 → 零改写。
+  const again = removeAcpBasicDisableBlock(healed.patch);
+  assert.strictEqual(again.changed, false);
+  assert.strictEqual(again.patch, healed.patch);
+  // 用户手写的 compaction-basic 条目（非本模块注释格式）不得被删除。
+  const user = '# 用户配置\n- id: compaction-basic\n  disabled: true\n';
+  const untouched = removeAcpBasicDisableBlock(user);
+  assert.strictEqual(untouched.changed, false);
+  assert.strictEqual(untouched.patch, user);
+});
 test('removeLegacyMarketplacePatchLines: 移除旧市场 insert 条目且幂等', () => {
   const patch = '# dsh web profile patch（由 DSH Desktop 维护）\n- insert:\n    - id: plugin-marketplace\n      name: \'@deepseek-ai/dsh-plugin-marketplace\'\n- insert:\n    - id: balance\n      name: \'@deepseek-ai/dsh-balance\'\n';
   const r1 = removeLegacyMarketplacePatchLines(patch);

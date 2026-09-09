@@ -13,7 +13,41 @@ window.__ModuleLoader__.load({
 
 		const react = require("react");
 		const { jsx, jsxs } = require("react/jsx-runtime");
-		const { bindSnapshotSelector } = require("@deepseek-ai/dsh-client-web-react");
+		// bindSnapshotSelector 三级回落（高级设置空白根因修复，issue #124）：
+		// rc.8 的 dsh-client-ui-renderer 只导出 apply/inject——require 成功但解构
+		// useSyncExternalStoreWithSelector 得 undefined（try 不抛、catch 永不触发），
+		// 组件首渲染即 TypeError → slot entry crash 退位 → dead cell → 栏目空白。
+		//   1) renderer.useSyncExternalStoreWithSelector —— 仅当真实导出（typeof 校验）
+		//   2) web-react.bindSnapshotSelector —— rc.7 官方包（Tauri 由 client-compat
+		//      注入页面模块表；Electron 0.4.x 前端 dist 自带）
+		//   3) react 原生 useSyncExternalStore 兜底 —— 整快照引用稳定（宿主源均
+		//      freeze 快照），selector 每渲染求值；isEqual 语义退化为 Object.is。
+		let bindSnapshotSelector;
+		try {
+			const rendererMod = require("@deepseek-ai/dsh-client-ui-renderer");
+			if (typeof rendererMod.useSyncExternalStoreWithSelector === "function") {
+				const useSESWS = rendererMod.useSyncExternalStoreWithSelector;
+				bindSnapshotSelector = (source) => {
+					const subscribe = (fn) => source.subscribe(fn);
+					const getSnapshot = () => source.getSnapshot();
+					return (selector, isEqual) => useSESWS(subscribe, getSnapshot, void 0, selector, isEqual);
+				};
+			}
+		} catch { /* 模块不在页面表（rc.7 及更早内核）→ 走下一级回落 */ }
+		if (!bindSnapshotSelector) {
+			try {
+				const webReactMod = require("@deepseek-ai/dsh-client-web-react");
+				if (typeof webReactMod.bindSnapshotSelector === "function") bindSnapshotSelector = webReactMod.bindSnapshotSelector;
+			} catch { /* compat 未注入（罕见）→ react 原生兜底 */ }
+		}
+		if (!bindSnapshotSelector) {
+			const { useSyncExternalStore } = require("react");
+			bindSnapshotSelector = (source) => {
+				const subscribe = (fn) => source.subscribe(fn);
+				const getSnapshot = () => source.getSnapshot();
+				return (selector) => selector(useSyncExternalStore(subscribe, getSnapshot));
+			};
+		}
 		const { Button } = require("@deepseek-ai/dsh-client-ui-primitives");
 
 		const NS = "dsh-prompt";

@@ -19,15 +19,22 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { writeFileAtomic } = require('../lib/patch-io');
+const { readFileRetry } = require('../lib/patch-io');
 const { COMPANION_PLUGINS } = require('../lib/companion-plugins');
+const { syncHubRecognition } = require('../lib/hub-registry');
 const { CORE_BUNDLE_NAMES } = require('../../profile-manifest');
 const { isPatchListValid, verifyBundleDir } = require('../../profile-bundle-heal');
 const { dedupePatchEntries } = require('../../profile-patch-heal');
+const { quotePatchScalarValues } = require('../plugin-core/lib/patch-surgery');
+const { PluginStateStore } = require('../plugin-core/lib/state-store');
 const { reconcileProfileBundles, resolveBundleDirLike } = require('../lib/profile-reconcile');
 const {
-  ACP_DISABLE_BLOCK,
+  ACP_SELF_DISABLE_BLOCK,
+  removeAcpBasicDisableBlock,
   PET_DISABLE_BLOCK,
   removeLegacyMarketplacePatchLines,
+  removeRetiredDshMarketPatchRows,
+  removeRetiredThirdPartyThinkingPatchRows,
   removedPluginIdsFromPatch,
   ensureDisabledPatchEntry,
   registerCompanionPatchEntries,
@@ -121,13 +128,25 @@ function createPluginSync(ctx) {
           return;
         }
       }
-      let text = fs.readFileSync(file, 'utf8');
+      // #154 第二根因：杀软/索引器瞬时锁（EBUSY/EPERM）下 readFileSync 会抛——
+      // 历史行为是解析失败 → 备份 + 重置为 []（连带丢补丁）。用有限重试读取。
+      let text = readFileRetry(file, 'utf8');
       const bareArray = /^\s*\[\]\s*$/m.test(text);
       const hasEntries = /^\s*-\s+(?:id|insert)\s*:/m.test(text);
       if (bareArray && hasEntries) {
         text = text.replace(/^\s*\[\]\s*$\n?/m, '');
         writeFileAtomic(file, text);
         log('profile patch 自愈: 移除了与列表混存的顶层 []（cordis.patch.yml）');
+      }
+      // #155 根因二幂等修复：`@deepseek-ai/...` 裸包名（js-yaml 报 bad
+      // indentation，内核装配即崩）补 YAML 引号。必须发生在解析之前——
+      // 裸 @ 值会让下面的 yaml.load 直接失败，旧行为是「备份 + 重置为 []」
+      // （连带丢失用户补丁）；这里先把脏标量修好再解析，健康文件零改写。
+      const quoted = quotePatchScalarValues(text);
+      if (quoted.changed) {
+        writeFileAtomic(file, quoted.text);
+        log('profile patch 自愈: 为 @ 开头/特殊字符包名补 YAML 引号（#155 根因二）');
+        text = quoted.text;
       }
       const yaml = loadYaml();
       if (!yaml) return;
@@ -179,9 +198,18 @@ function createPluginSync(ctx) {
       }
       const yaml = loadYaml();
       if (!yaml) return; // 无 yaml 依赖：跳过解析（运行时防护兜底）
+      // #155 根因二幂等修复（同 healProfilePatch）：裸 @ 包名先补引号再解析。
+      // #154：瞬时锁下用有限重试读取。
+      let text = readFileRetry(file, 'utf8');
+      const quoted = quotePatchScalarValues(text);
+      if (quoted.changed) {
+        writeFileAtomic(file, quoted.text);
+        log('家级补丁层自愈: 为 @ 开头/特殊字符包名补 YAML 引号（#155 根因二）');
+        text = quoted.text;
+      }
       let parsed = null;
       let error = null;
-      try { parsed = yaml.load(fs.readFileSync(file, 'utf8')); } catch (err) { error = err; }
+      try { parsed = yaml.load(text); } catch (err) { error = err; }
       if (!error && isPatchListValid(parsed)) {
         homePatchHealMemo = { file, size: sig.size, mtimeMs: sig.mtimeMs, hash: sig.hash };
         return;
@@ -266,7 +294,15 @@ function createPluginSync(ctx) {
   }
 
   function sync() {
-    if (process.platform !== 'win32') return;
+    // 平台门已放开（v0.5.1，K2 清查 #14）：Electron 时代仅发 Windows 故加此门；
+    // Tauri 线发全平台后，非 Windows 上此门导致伴随插件完全不安装（boot 仍报
+    // ok:true 的静默降级）。本函数体（heal→sync→reconcile→register）为纯
+    // fs/path 操作：symlink farm 在非 Windows 退化为普通 symlink（语义等价，
+    // profile-module-heal 的 realpath 判定兼容）。macOS/Linux 首启真机回归
+    // 待验证，出现异常时日志（log 通道）会落 boot 步骤 warning。
+    if (process.platform !== 'win32') {
+      log('plugin-sync: 非 Windows 平台（' + process.platform + '）首次启用伴随插件同步（预览）');
+    }
     try {
       healProfilePatch();
       const home = getHome();
@@ -276,6 +312,17 @@ function createPluginSync(ctx) {
       let patchText = '';
       try { patchText = fs.readFileSync(patchFile, 'utf8'); } catch { /* 无 patch 文件 */ }
       const removedIds = removedPluginIdsFromPatch(patchText);
+      // 卸载决策双源：patch removed 行 ∪ 家级状态存储（抗 patch 重置复活，
+      // 与 CLI 同步器共用同一文件）。状态不可用时按单源处理（不阻塞启动）。
+      let stateStore = null;
+      try {
+        stateStore = new PluginStateStore({ file: path.join(home, 'desktop-plugin-state.json'), log: (m) => log(m) });
+      } catch (err) {
+        log('插件状态存储不可用，卸载决策仅按 patch 行: ' + err.message);
+      }
+      if (stateStore) {
+        for (const id of Object.keys(stateStore.getUninstalled())) removedIds.add(id);
+      }
       const { bundleNames, missingNames: missingSourceNames } = syncCompanionFiles({
         assetsRoot: path.join(appDir, 'assets', 'plugins'),
         profileDir,
@@ -298,21 +345,50 @@ function createPluginSync(ctx) {
         }
       } catch {}
 
+      // 内置市场切换为 dsh-community-market：退役 dshmarket（loader id
+      // dsh-market）的 patch 行一次性清理（幂等；目录与 manifest 登记在
+      // syncCompanionFiles 内的 removeRetiredDshMarketDir 已处理）。
+      try {
+        const retiredBefore = fs.readFileSync(patchFile, 'utf8');
+        const retired = removeRetiredDshMarketPatchRows(retiredBefore);
+        if (retired.changed) {
+          writeFileAtomic(patchFile, retired.patch);
+          log('已从 cordis.patch.yml 移除退役插件市场 dshmarket 条目');
+        }
+      } catch {}
+
+      // 内置推理强度选择切换为 dsh-reasoning-effort：退役 dsh-third-party-thinking
+      // （loader id third-party-thinking）的 patch 行一次性清理（幂等；目录在
+      // syncCompanionFiles 内的 removeRetiredThirdPartyThinkingDir 已处理）。
+      try {
+        const retiredTpt = fs.readFileSync(patchFile, 'utf8');
+        const retired2 = removeRetiredThirdPartyThinkingPatchRows(retiredTpt);
+        if (retired2.changed) {
+          writeFileAtomic(patchFile, retired2.patch);
+          log('已从 cordis.patch.yml 移除退役插件 dsh-third-party-thinking 条目');
+        }
+      } catch {}
+
       // v0.3.11 起内置插件市场 zat-dsh-engine 默认移除（用户要求）。
       retireZatEngine(profileDir);
 
-      // billion-context-dsh（compaction-acp）与 compaction-basic 不能并存。
+      // billion-context-dsh（compaction-acp，模型驱动的 ACP 压缩后端）默认关闭：
+      // 用户反馈其在上下文占用未及 1/4 时仍频繁压缩。改为随包默认禁用（顶层
+      // disabled 块一票否决 bundle 自身 insert），需要时在设置 → 插件 → 管理
+      // 一键开启。同时撤销历史自动写入的 compaction-basic 禁用块，恢复内核默认压缩。
       if (bundleNames.has('billion-context-dsh')) {
         try {
           let patch = '';
           try { patch = fs.readFileSync(patchFile, 'utf8'); } catch { /* 全新 profile：patch 文件尚未创建，视为空 */ }
-          const entry = ensureDisabledPatchEntry(patch, new RegExp('(?:^|\\n)\\s*-?\\s*id\\s*:\\s*compaction-basic\\b'), ACP_DISABLE_BLOCK);
-          if (entry.changed) {
-            writeFileAtomic(patchFile, entry.patch);
-            log('已禁用 compaction-basic（billion-context-dsh 接管压缩后端）');
+          const heal = removeAcpBasicDisableBlock(patch);
+          patch = heal.patch;
+          const self = ensureDisabledPatchEntry(patch, new RegExp('(?:^|\\n)\\s*-?\\s*id\\s*:\\s*compaction-acp\\b'), ACP_SELF_DISABLE_BLOCK);
+          if (heal.changed || self.changed) {
+            writeFileAtomic(patchFile, self.patch);
+            log('billion-context-dsh 默认关闭：已禁用 compaction-acp 并恢复内核默认 compaction-basic');
           }
         } catch (err) {
-          log('写入 compaction-basic 禁用条目失败: ' + err.message);
+          log('写入 compaction-acp 默认禁用条目失败: ' + err.message);
         }
       }
 
@@ -331,14 +407,25 @@ function createPluginSync(ctx) {
         }
       }
 
-      // profile manifest 装配对账（唯一实现）。
-      const removedBundles = COMPANION_PLUGINS.filter((p) => removedIds.has(p.id)).map((p) => p.name);
+      // profile manifest 装配对账（唯一实现）。removedBundles 覆盖内置配套 +
+      // 第三方已卸载（state 决策里的非配套名），第三方 bundle 卸载后不再残留
+      // 「每次启动解析失败」的登记。
+      const companionRemoved = COMPANION_PLUGINS.filter((p) => removedIds.has(p.id)).map((p) => p.name);
+      const removedBundles = new Set(companionRemoved);
+      if (stateStore) {
+        const companionNames = new Set(COMPANION_PLUGINS.map((p) => p.name));
+        for (const [id, entry] of Object.entries(stateStore.getUninstalled())) {
+          const name = entry && entry.name;
+          if (name && !companionNames.has(name)) removedBundles.add(name);
+          else if (!name) removedBundles.add(id);
+        }
+      }
       const reconciled = reconcileProfileBundles(profileDir, {
         installAnchorDir: getInstallAnchorDir(),
         coreNames: CORE_BUNDLE_NAMES,
         addNames: bundleNames,
         missingNames: missingSourceNames,
-        removedBundles: new Set(removedBundles),
+        removedBundles,
         excludeFromRecover: new Set([...CORE_BUNDLE_NAMES, ...COMPANION_PLUGINS.map((p) => p.name)]),
         parsePatch: loadYaml(),
         log: (m) => log(m),
@@ -358,11 +445,27 @@ function createPluginSync(ctx) {
         missingNames: missingSourceNames,
         removedIds,
         onDrop: (m) => log(m),
+        // issue #116 诊断性：登记/改名逐条进日志——「文件已复制但未登记」类问题
+        // （历史上注册被补丁层既有内容误抑制）从日志即可定位，不再无痕静默。
+        onEntry: (m) => log(m),
       });
       if (registration.changed) {
         writeFileAtomic(patchFile, registration.patch);
         log('已同步配套插件到 web profile: ' + COMPANION_PLUGINS.map((p) => p.id).join(', '));
       }
+
+      // 第八步：hotplug-hub 识别（issue #156 止血后口径）。hub lib/CLI 的
+      // status/preview 只认 packs 目录 → 写 dsh-desktop 指针包；v0.5.3 曾把
+      // 内置件按 npm 形状写进 profile dependencies（多数不在 npm 上 → pnpm
+      // 404 锁死 profile），此处幂等清除存量脏数据且不再写入（用户在下次
+      // 启动即自愈，pnpm 恢复可用）。
+      syncHubRecognition({
+        home,
+        profileDir,
+        assetsRoot: path.join(appDir, 'assets', 'plugins'),
+        removedIds,
+        log: (m) => log(m),
+      });
     } catch (err) {
       log('同步配套插件失败: ' + err.message);
     }

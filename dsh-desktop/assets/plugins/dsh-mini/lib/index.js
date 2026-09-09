@@ -31,7 +31,7 @@
 // Every registration is wrapped in ctx.effect and routes self-heal on
 // re-registration conflicts, so the super-injector hot reload stays clean.
 
-import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
+import { randomUUID, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -71,7 +71,10 @@ const API_PREFIX = "/dsh-mini/api";
 const APP_PREFIX = "/dsh-mini";
 const PUBLIC_DIR = resolve(fileURLToPath(new URL("../public", import.meta.url)));
 const GUI_DIR = resolve(fileURLToPath(new URL("../gui", import.meta.url)));
-const MINI_HOME = join(homedir(), ".dsh", "dsh-mini");
+// 跟随 DSH_HOME（dshHome 在下方函数声明，提升后此处可用）：隔离部署/
+// 多实例时 token/config 不再写进真实用户 profile（实测缺陷：自定义
+// DSH_HOME 下曾静默在 homedir() 生成新 token，双开共享 token 亦源于此）。
+const MINI_HOME = join(dshHome(), "dsh-mini");
 
 // GUI 静态服务 —— 官方 DSH 前端快照（阶段0 采集的 gui/dist + gui/bundles）
 const GUI_DIST = join(GUI_DIR, "dist");
@@ -148,12 +151,12 @@ function authGuiRequest(req, res, url) {
   // publicMode：取消回环豁免——同机隧道（cloudflared/frp/ngrok）转出的请求 remoteAddress
   // 是回环，若不收紧就会被误判为本机直连而免鉴权（SPEC-v4 §5.1）。
   if (isLoopback(req) && !isPublicMode() && req.headers["x-dsh-mini-gateway"] !== "1") return true;
-  if (hasGuiSession(req)) return true;
-  const want = effectiveToken();
-  if (want && url.searchParams.get("token") === want) {
-    issueGuiSession(res, url);
-    return false; // 已发 302
-  }
+	if (hasGuiSession(req)) return true;
+	const want = effectiveToken();
+	if (want && tokenEquals(url.searchParams.get("token"), want)) {
+		issueGuiSession(res, url);
+		return false; // 已发 302
+	}
   sendText(
     res,
     403,
@@ -169,10 +172,10 @@ function authGuiRequest(req, res, url) {
 function authGuiWs(req, url) {
   if (!isPublicMode() && isExternalHost(req)) return false; // SPEC-v5 §2：关闭外网访问时拒外网来源
   if (isLoopback(req) && !isPublicMode() && req.headers["x-dsh-mini-gateway"] !== "1") return true;
-  if (hasGuiSession(req)) return true;
-  const want = effectiveToken();
-  if (want && url.searchParams.get("token") === want) return true;
-  return false;
+	if (hasGuiSession(req)) return true;
+	const want = effectiveToken();
+	if (want && tokenEquals(url.searchParams.get("token"), want)) return true;
+	return false;
 }
 // 静态文件安全解析：拒绝 .. 穿越
 function safeResolve(root, urlPath) {
@@ -205,6 +208,36 @@ function httpError(status, message) {
 function isLoopback(req) {
   const h = req.socket?.remoteAddress || "";
   return h === "127.0.0.1" || h === "::1" || h === "::ffff:127.0.0.1" || h === "fe80::1";
+}
+
+// ── 鉴权比对与日志脱敏（安全审计 2026-08：token 全生命周期收口）─────────────
+// tokenEquals：恒时比对。先 SHA-256 再 timingSafeEqual，长度差异不提前短路，
+// 避免「长度 / 前缀匹配耗时」作为侧信道逐位恢复 token（LAN 内可测）。
+// 空串（未提供 / 未配置）一律 false，不区分失败原因。
+function tokenEquals(provided, want) {
+  const a = typeof provided === "string" ? provided : "";
+  const b = typeof want === "string" ? want : "";
+  if (a.length === 0 || b.length === 0) return false;
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
+// maskToken：日志/诊断输出只保留可辨认的前 4 位与后 4 位。完整 token 仅在
+// 受鉴权的 /dsh-mini/api/gateway 状态与配对二维码里出现——绝不进内核 stdout
+// （stdout 会落 dsh-web.log，用户手动分享日志时即泄漏 LAN 网关钥匙）。
+function maskToken(token) {
+  const t = String(token || "");
+  if (t.length === 0) return "(not set)";
+  if (t.length <= 12) return "****";
+  return t.slice(0, 4) + "…" + t.slice(-4);
+}
+
+// maskUrlToken：URL 日志形态的掩码（V4 审计发现 URL 行 ?token=<完整128位>
+// 漏修——maskToken 只覆盖了专用 token 行）。保留 query 结构，token 值打
+// 前8后4；无 token 查询串的 URL 原样返回。
+function maskUrlToken(url) {
+  return String(url || "").replace(/([?&]token=)([A-Za-z0-9]{8})[A-Za-z0-9]+([A-Za-z0-9]{4})/g, "$1$2…$3");
 }
 
 // 真正来自本机的请求（非网关代理转发）。loopback-only 端点必须用它，
@@ -357,7 +390,7 @@ function assertAuth(req, res, url) {
   const auth = req.headers["authorization"] || "";
   let provided = auth.startsWith("Bearer ") ? auth.slice(7).trim() : req.headers["x-dsh-mini-token"] || "";
   if (!provided && url) provided = url.searchParams.get("token") || "";
-  if (provided !== want) {
+  if (!tokenEquals(provided, want)) {
     sendJson(res, 403, { error: "invalid token" });
     return false;
   }
@@ -579,7 +612,7 @@ function buildGuiledIndex() {
       "<div style=\"font-family:system-ui,sans-serif;padding:32px;max-width:520px\">" +
       "<h1>GUI 资产缺失</h1>" +
       "<p>当前 dsh-mini 安装未包含 <code>gui/</code> 运行资产（<code>gui/dist/index.html</code>、<code>gui/manifest.json</code>、<code>gui/bundles/</code>）。</p>" +
-      "<p>请改用最新版安装包（确认内含 <code>gui/</code> 目录）重新安装本插件后重试；若为局域网/移动端连接，请在部署方重新 `npm pack` 后再分发。</p>" +
+      "<p>请重启桌面端（同步器会自动补齐缺失的 <code>gui/</code> 资产）；若仍缺失，改用最新版安装包（确认内含 <code>gui/</code> 目录）重新安装本插件后重试；若为局域网/移动端连接，请在部署方重新 `npm pack` 后再分发。</p>" +
       "</div>";
   }
   const boot = JSON.stringify({ rev, entries: manifest ? manifest.entries : [] });
@@ -973,6 +1006,19 @@ function startGateway(ctx) {
       sendJson(res, 405, { error: "method not allowed" });
       return;
     }
+    // dsh-desktop fix（0.6.3 检修）：网关 RPC 面与主端口 dispatchApi 的 loopback-only
+    // 口径对齐——gateway/config（改网关配置）与 gateway/token/reset（轮换 LAN 钥匙）
+    // 属本机特权操作，已配对的手机/局域网会话不得触达。methodName 取自路径切片
+    // （读 body 前即可判，快）。
+    if (
+      req.headers["x-dsh-mini-gateway"] === "1" || !isLoopback(req)
+    ) {
+      const m = /^(gateway\/config|gateway\/token\/reset)$/.test(methodName);
+      if (m) {
+        sendJson(res, 403, { error: "gateway config/token changes are loopback-only" });
+        return;
+      }
+    }
     // RPC body 上限与上传钳制对齐：session.prompt 携带 base64 图片（膨胀 ~1.33×），
     // 固定 16MB 会在 maxUploadMb≥12MB 时 413。用 maxUploadMb×1.6 留余量，至少 24MB。
     const cfgNow = loadConfig();
@@ -1144,7 +1190,9 @@ function gatewayStatus(ctx) {
   // SPEC v4 §6.2：publicMode 且已配 publicUrl 时，二维码/连接 URL 优先走公网地址
   if (cfg.publicMode && cfg.publicUrl && gwListening) {
     url = `${cfg.publicUrl}/?token=${encodeURIComponent(token)}`;
-  } else if (cfg.lanEnabled && ips.length) {
+  } else if (cfg.lanEnabled && ips.length && !gwListenError) {
+    // 监听失败（如 EADDRINUSE）绝不外发 LAN URL：手机会连到占用端口的
+    // 另一实例（双开场景实测缺陷）——降级回 loopback，bindWarn 给指引。
     url = `http://${ips[0]}:${cfg.gatewayPort}/?token=${encodeURIComponent(token)}`; // v3: 根路径直接出 GUI
   } else if (port > 0) {
     url = `http://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`;
@@ -1153,7 +1201,12 @@ function gatewayStatus(ctx) {
   if (cfg.publicMode && !cfg.publicUrl) {
     bindWarn = "允许外网访问已开启，但尚未填写公网地址（publicUrl）。填入隧道公网地址后二维码将切为公网 URL。";
   } else if (cfg.lanEnabled) {
-    if (gwListenError) bindWarn = "LAN 网关启动失败：" + gwListenError;
+    if (gwListenError) {
+      bindWarn = "LAN 网关启动失败：" + gwListenError;
+      if (/EADDRINUSE/i.test(gwListenError)) {
+        bindWarn += "（端口被另一实例占用——手机扫码会连到那个实例；请在本实例设置中更换网关端口，或退出另一实例）";
+      }
+    }
     else if (!gwListening) bindWarn = "LAN 网关未在监听（正在启动或端口被占用）。";
     else if (ips.length === 0) bindWarn = "未检测到局域网 IPv4 地址，手机无法访问本机。";
   }
@@ -1393,21 +1446,32 @@ function apply(ctx) {
   }, "dsh-mini: lan gateway");
 
   // 4) Startup log + gateway summary.
+  //    安全审计 2026-08：token 不再明文进 stdout——stdout 会整段落入 dsh-web.log，
+  //    用户分享日志排查问题时会把 LAN 网关钥匙一起送出去。完整 token 只在
+  //    受鉴权的 /dsh-mini/api/gateway 状态与配对二维码里出现。
   const token = ensureToken();
   const gw = gatewayStatus(ctx);
   console.log(`[dsh-mini] v${PLUGIN_VERSION} mounted at ${APP_PREFIX}/ (api: ${API_PREFIX}/)`);
   console.log(`[dsh-mini] webServer bind: ${gw.host}:${gw.port}; LAN gateway ${gw.lanEnabled ? "ENABLED" : "disabled"}; LAN IPs: ${gw.lanIps.join(", ") || "(none)"}`);
-  console.log(`[dsh-mini] bridge token (share with the phone app): ${token}`);
+  console.log(`[dsh-mini] bridge token (masked; full value in the phone pairing QR or GET ${API_PREFIX}/gateway): ${maskToken(token)}`);
   if (gw.gatewayListening) {
     console.log(`[dsh-mini] gateway listening on 0.0.0.0:${gw.gatewayPort}`);
   } else if (gw.bindWarn) {
     console.warn(`[dsh-mini] gateway not listening: ${gw.bindWarn}`);
   }
+  // V4 审计残留泄漏修复：URL 日志行不得带完整 token（历史形态 ?token=<128位>
+  // 曾落入 dsh-web.log——用户分享日志即交出 LAN 钥匙）。日志打掩码形态；
+  // 完整 URL 仅存在于受鉴权的 GET /gateway 状态与配对二维码。
+  const maskedUrl = maskUrlToken(gw.url);
   if (gw.reachable) {
-    console.log(`[dsh-mini] phone connect URL: ${gw.url}`);
+    console.log(`[dsh-mini] phone connect URL (token masked; full URL in GET ${API_PREFIX}/gateway or the pairing QR): ${maskedUrl}`);
   } else {
-    console.log(`[dsh-mini] loopback URL: ${gw.url} (enable the LAN gateway in DSH settings to reach from a phone)`);
+    console.log(`[dsh-mini] loopback URL: ${maskedUrl} (enable the LAN gateway in DSH settings to reach from a phone)`);
   }
 }
 
-export { name, inject, apply };
+// _internal：仅供本包测试（scripts/test/dsh-mini.test.js）导入的纯函数面。
+// 不构成插件间 API——上游升级时随实现一起调整，不承诺兼容。
+const _internal = { tokenEquals, maskToken, maskUrlToken };
+
+export { name, inject, apply, _internal };

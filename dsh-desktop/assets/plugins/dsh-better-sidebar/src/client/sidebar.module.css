@@ -32,11 +32,15 @@
 :global([data-dsh-panel-host]) {
   position: fixed;
   inset: 0;
-  /* 右侧让位官方导航栏（对话消息导航条），目录栏打开时并排不遮挡。 */
-  right: var(--dsh-official-rail-clearance, 56px);
   z-index: 40;
   pointer-events: none;
 }
+
+/* 注：面板让位只走 layout.css 的 #root margin 推挤（--dsh-sidebar-width）
+   单一机制。历史上的双保险——本规则曾用 right 让位（56px clearance）与
+   .cHLsAW_frame 的 --dsh-official-push padding——与 margin 并存时产生
+   「导航栏与文件面板之间 explorer+8px(+56px) 的巨隙」（用户实报），
+   已全部移除；勿再叠加第二套让位。 */
 
 :global([data-dsh-panel-host][data-dsh-panel-host-degraded]) {
   position: absolute;
@@ -359,8 +363,22 @@ body[data-dsh-sidebar-dragging] .bottomPanel {
   display: flex;
   overflow: hidden;
 }
-/* 面板打开时强制显示官方消息导航条：官方在 center column 变窄（含本插件面板占用）时会响应式隐藏它。 */
+/* 面板打开时强制显示官方消息导航条：官方在 center column 变窄（含本插件面板占用）时会响应式隐藏它。
+   注：._9JjVLG_slot 是 0.1.1-rc 系内核的 css-modules hash——内核升级漂移时
+   本规则自然失配（无害）；新内核若需要同等强显，请先实机探出新 hash 再改。 */
 :global(body:not([data-dsh-sidebar-collapsed])) :global(._9JjVLG_slot) { display: block !important; }
+
+/* 面板打开时导航条（TurnNavigator frame）收回右衬带、右缘贴住面板左边框。
+   官方把 rail 摆在对话列右缘外 20px（right:calc(12px - (16px+16px))，贴
+   消息内容的右衬）；面板打开后列右缘=面板左缘，那 20px 落在面板下方
+   （面板 host z-40 盖住 rail z-7）——28px 宽的条被盖 20px，几乎不可见
+   （用户实报「导航栏不见了/没贴着侧边栏」）。衬带（scroll 右 padding）
+   = clearance(16px)+16px = 32px，恰好容纳 28px 的条：右缘贴列缘（=面板
+   左边框），整体在衬带内不压正文，像 Cursor 等工具的消息导航一样。拖动
+   调宽时 right 无 transition，恒等跟手。hash 漂移时规则自然失配，无害。 */
+:global(body:not([data-dsh-sidebar-collapsed])) :global(._9JjVLG_frame) {
+  right: calc(-16px - var(--dsh-composer-side-clearance, 16px)) !important;
+}
 
 .divider {
   position: relative;
@@ -2742,7 +2760,8 @@ body[data-dsh-sidebar-dragging] .bottomPanel {
   color: var(--dsw-alias-state-business-primary);
 }
 
-/* 面板打开时真实收缩官方对话区（推挤而非覆盖）：官方 AppFrame 根。 */
-.cHLsAW_frame {
-  padding-right: var(--dsh-official-push, 0px) !important;
-}
+/* 注：旧的 .cHLsAW_frame padding-right 推挤（--dsh-official-push）已删除：
+   explorer rail 在 panel 内部，push 公式却再叠一份 explorer 宽（双计），
+   与 #root margin 推挤叠加后对话列被推离面板一个 explorer+8px 的巨隙
+   （用户实报「导航栏和文件目录间隙太大」）；拖动中 push 由 400ms 轮询
+   兜底同步，导航条呈阶梯跳变（「不恒等跟随」）。让位回归 margin 单机制。 */

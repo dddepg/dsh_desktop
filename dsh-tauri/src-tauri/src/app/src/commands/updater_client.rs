@@ -286,6 +286,90 @@ fn cached_cross_anchor(name: &str) -> Option<String> {
     CROSS_ANCHOR_URL_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().ok()?.get(name).cloned()
 }
 
+// ---------------------------------------------------------------------------
+// Gitee 分片资产（.partN）—— GitHub 不可达用户的新版安装包唯一来路
+// ---------------------------------------------------------------------------
+
+/// 分片下载计划（进程内缓存，check_latest 登记、download_to_temp 消费）。
+///
+/// 背景：Gitee 单附件 100MB 上限，v0.6.x 起 Windows 安装器 ~110MB——
+/// mirror-gitee job 对超限资产按 `<原名>.part1/.part2/…` 分片镜像（每片
+/// ≤80MiB）；`<原名>.sha256` 边车是小文件照常整体镜像，锚的是**完整文件**
+/// 的哈希。壳侧在此登记分片计划：某源只有分片形态时合成 name=原名的
+/// 资产（url=part1，供展示），真实下载逐片顺序拼接后整文件哈希校验。
+/// 实爆场景（v0.6.2 多用户）：GitHub 不可达 + Gitee 缺整资产 →
+/// 「已查 ["Gitee"]，均无 windows/x86_64 可用安装包」永久卡死无法更新。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartsPlan {
+    /// 分片下载 URL（part1..partN 顺序，逐片追加即原文）。
+    pub urls: Vec<String>,
+    /// 同 release 内 `<原名>.sha256` 边车资产的 URL（完整文件哈希锚；None=无边车）。
+    pub sidecar_url: Option<String>,
+    /// 元数据 size 合计（Gitee 资产无 size → 0 = 未知）。
+    pub total_size: u64,
+}
+
+static PARTS_CACHE: OnceLock<Mutex<HashMap<String, PartsPlan>>> = OnceLock::new();
+
+fn cache_parts(name: &str, plan: PartsPlan) {
+    if let Ok(mut m) = PARTS_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        m.insert(name.to_string(), plan);
+    }
+}
+
+fn cached_parts(name: &str) -> Option<PartsPlan> {
+    PARTS_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().ok()?.get(name).cloned()
+}
+
+/// `<原名>.partN` → (`原名`, N)。N 非数字/0 → None（`.part` 是壳侧下载临时
+/// 后缀，不得与分片命名混淆；`x.part1.sha256` 这类尾巴解析失败自然出局）。
+fn parse_part_name(name: &str) -> Option<(&str, u32)> {
+    let (base, idx) = name.rsplit_once(".part")?;
+    if base.is_empty() {
+        return None;
+    }
+    let idx = idx.parse::<u32>().ok()?;
+    (idx > 0).then_some((base, idx))
+}
+
+/// 从单源资产清单里找本平台的分片套装：base 名过 [`asset_rank`]、分片号
+/// 连续 1..=N。返回（合成整资产[name=base, url=part1, size=合计]，计划）。
+/// 多套命中时按 base 的 rank 取最优（与整资产挑选同口径）。
+fn find_part_set(os: &str, arch: &str, assets: &[ReleaseAsset]) -> Option<(ReleaseAsset, PartsPlan)> {
+    let mut groups: HashMap<&str, Vec<(u32, &ReleaseAsset)>> = HashMap::new();
+    for a in assets {
+        if let Some((base, idx)) = parse_part_name(&a.name) {
+            groups.entry(base).or_default().push((idx, a));
+        }
+    }
+    let mut best: Option<(u8, &str, Vec<(u32, &ReleaseAsset)>)> = None;
+    for (base, mut parts) in groups {
+        let Some(rank) = asset_rank(os, arch, base) else { continue };
+        parts.sort_by_key(|(i, _)| *i);
+        // 分片号必须从 1 起连续：缺片拼接必坏，宁可当作没有分片。
+        let contiguous = parts.iter().enumerate().all(|(k, (i, _))| *i == k as u32 + 1);
+        if !contiguous {
+            continue;
+        }
+        let better = best
+            .as_ref()
+            .map(|(r, _, _)| rank < *r)
+            .unwrap_or(true);
+        if better {
+            best = Some((rank, base, parts));
+        }
+    }
+    let (_, base, parts) = best?;
+    let urls: Vec<String> = parts.iter().map(|(_, a)| a.url.clone()).collect();
+    let total_size: u64 = parts.iter().map(|(_, a)| a.size).sum();
+    let sidecar_url = assets
+        .iter()
+        .find(|a| a.name == format!("{base}.sha256"))
+        .map(|a| a.url.clone());
+    let synth = ReleaseAsset { name: base.to_string(), url: urls[0].clone(), size: total_size };
+    Some((synth, PartsPlan { urls, sidecar_url, total_size }))
+}
+
 /// 清扫陈旧 `dsh-update-*` 临时目录（V2 P2-2）：崩溃/强杀中断的下载目录以
 /// pid+nanos 命名永不复用，会永久残留（每次约 70MB）。下载前按 TTL（24h，
 /// 远大于任何正常下载窗口）清一遍，best-effort 忽略一切错误。
@@ -614,9 +698,23 @@ fn resolve_outcome(
             break;
         }
     }
+    if chosen.is_none() {
+        // 分片回落（Gitee 100MB 限镜像形态）：某源无整资产但有本平台
+        // `.partN` 套装时合成整资产并登记分片计划，下载链逐片拼接后整文件
+        // 哈希校验——GitHub 不可达的国内单源用户由此不再卡死在旧版。
+        for (source, release) in &cands {
+            if let Some((synth, plan)) = find_part_set(os, arch, &release.assets) {
+                cache_parts(&synth.name, plan);
+                // 跨源锚照常登记（GitHub CDN 可达时的额外哈希兑底）。
+                cache_cross_anchor(&synth.name, github_sidecar_url(&release.tag, &synth.name));
+                chosen = Some((*source, release.clone(), synth));
+                break;
+            }
+        }
+    }
     let Some((source, release, asset)) = chosen else {
         return Err(UpdaterError::BadManifest(format!(
-            "已查 {scanned:?}，均无 {os}/{arch} 可用安装包（Gitee 100MB 限可能缺席大资产）"
+            "已查 {scanned:?}，均无 {os}/{arch} 可用安装包（整资产与 .partN 分片形态均未发现）——请到 GitHub Releases 或 Gitee Releases（gitee.com/my-yang-yunfan/dsh_desktop）手动下载安装包；Gitee 分片资产可连同 .merge.bat 一并下载后双击合并"
         )));
     };
     // V2 P1-1：登记另一源的同名资产 URL（HashMismatch 时换源重试用）。
@@ -689,15 +787,28 @@ pub async fn download_to_temp(
         }
         None => match cached_sha256(&asset.name) {
             Some(s) => Some(s),
-            None => match fetch_sidecar_sha256(&asset.url).await {
-                Some(s) => Some(s),
-                // RV8 P0-1：跨源锚兜底——本源无边车时取 GitHub 侧边车
-                //（Gitee 单源场景的唯一可信哈希来源）。
-                None => match cached_cross_anchor(&asset.name) {
-                    Some(anchor_url) if anchor_url != asset.url => fetch_sidecar_sha256(&anchor_url).await,
-                    _ => None,
-                },
-            },
+            None => {
+                // 哈希锚优先序（digest 缓存之后）：边车（分片套装用同 release
+                // 镜像的整文件边车；整资产用 url 推导）→ 跨源 GitHub 边车锚。
+                let mut anchors: Vec<String> = Vec::new();
+                match cached_parts(&asset.name).and_then(|p| p.sidecar_url) {
+                    Some(u) => anchors.push(u),
+                    None => anchors.push(format!("{}.sha256", asset.url)),
+                }
+                if let Some(anchor) = cached_cross_anchor(&asset.name) {
+                    if !anchors.contains(&anchor) {
+                        anchors.push(anchor);
+                    }
+                }
+                let mut resolved = None;
+                for u in &anchors {
+                    if let Some(s) = fetch_sidecar_url_sha256(u).await {
+                        resolved = Some(s);
+                        break;
+                    }
+                }
+                resolved
+            }
         },
     };
     // RV8 P0-1 fail-closed：Gitee 源且全链无任何哈希锚 → 拒绝下载（50MB
@@ -715,44 +826,13 @@ pub async fn download_to_temp(
     let safe = sanitize_filename(&asset.name);
     let part = dir.join(format!("{safe}.part"));
     let final_path = dir.join(&safe);
-    let outcome = match stream_to_file(asset, &part, &mut progress, expected.as_deref()).await {
-        Err(err @ UpdaterError::HashMismatch { .. }) => {
-            // V2 P1-1：digest 缓存是 GitHub 的哈希而本源（Gitee）文件可能镜像漂移
-            // ——换另一源同名资产重试一次；同 digest 通过 = 漂移（用权威源文件），
-            // 仍失败 = 真篡改，原样硬失败（fail-closed 不变）。
-            match cached_alt_url(&asset.name) {
-                Some(alt_url) if alt_url != asset.url => {
-                    let _ = std::fs::remove_file(&part);
-                    let mut alt = asset.clone();
-                    alt.url = alt_url;
-                    // 另一源的元数据 size 未知（本结构体只带首选源的）→ 置 0 走
-                    // 「未知」语义（跳过截断核对）；哈希校验不受影响仍强制。
-                    alt.size = 0;
-                    match stream_to_file(&alt, &part, &mut progress, expected.as_deref()).await {
-                        // TA9-1：双源均不符时带逐路摘要——单看一条 HashMismatch
-                        // 无法区分「镜像漂移（换源救不回=全面投毒）」与单源故障，
-                        // 支持排障需要两路期望/实际对照。（产出值而非提前 return：
-                        // 外层 outcome 分支负责临时目录清理。）
-                        Err(alt_err @ UpdaterError::HashMismatch { .. }) => {
-                            if let (UpdaterError::HashMismatch { expected: e1, actual: a1 },
-                                    UpdaterError::HashMismatch { expected: _, actual: a2 }) = (&err, &alt_err) {
-                                Err(UpdaterError::HashMismatch {
-                                    expected: format!(
-                                        "{e1}（双源均不符，疑似全面投毒/发布事故——主源实际={a1}；换源后实际={a2}）"
-                                    ),
-                                    actual: a2.clone(),
-                                })
-                            } else {
-                                Err(alt_err)
-                            }
-                        }
-                        other => other,
-                    }
-                }
-                _ => Err(err),
-            }
-        }
-        other => other,
+    // 分片套装（Gitee 超限镜像形态）：逐片顺序拼接为整文件后校验——另一源
+    // 无同名分片可换，不走换源重试；整资产维持原单请求路径（含 HashMismatch
+    // 换源重试，见 stream_direct_with_alt_retry）。
+    let outcome = if let Some(plan) = cached_parts(&asset.name) {
+        stream_parts_to_file(&plan, &asset.name, &part, &mut progress, expected.as_deref()).await
+    } else {
+        stream_direct_with_alt_retry(asset, &part, progress, expected.as_deref()).await
     };
     match outcome {
         Ok(()) => {
@@ -830,10 +910,123 @@ async fn stream_to_file(
     Ok(())
 }
 
+/// 整资产单请求下载 + HashMismatch 换源重试（V2 P1-1 / TA9-1 语义原为
+/// download_to_temp 内联 match，分片路径拆出后收口为独立函数）。
+async fn stream_direct_with_alt_retry(
+    asset: &ReleaseAsset,
+    part: &Path,
+    mut progress: impl FnMut(u64, u64),
+    expected_sha: Option<&str>,
+) -> Result<(), UpdaterError> {
+    match stream_to_file(asset, part, &mut progress, expected_sha).await {
+        Err(err @ UpdaterError::HashMismatch { .. }) => {
+            // digest 缓存是 GitHub 的哈希而本源（Gitee）文件可能镜像漂移
+            // ——换另一源同名资产重试一次；同 digest 通过 = 漂移（用权威源文件），
+            // 仍失败 = 真篡改，原样硬失败（fail-closed 不变）。
+            match cached_alt_url(&asset.name) {
+                Some(alt_url) if alt_url != asset.url => {
+                    let _ = std::fs::remove_file(part);
+                    let mut alt = asset.clone();
+                    alt.url = alt_url;
+                    // 另一源的元数据 size 未知（本结构体只带首选源的）→ 置 0 走
+                    // 「未知」语义（跳过截断核对）；哈希校验不受影响仍强制。
+                    alt.size = 0;
+                    match stream_to_file(&alt, part, &mut progress, expected_sha).await {
+                        // TA9-1：双源均不符时带逐路摘要——单看一条 HashMismatch
+                        // 无法区分「镜像漂移（换源救不回=全面投毒）」与单源故障，
+                        // 支持排障需要两路期望/实际对照。（产出值而非提前 return：
+                        // 外层 outcome 分支负责临时目录清理。）
+                        Err(alt_err @ UpdaterError::HashMismatch { .. }) => {
+                            if let (UpdaterError::HashMismatch { expected: e1, actual: a1 },
+                                    UpdaterError::HashMismatch { expected: _, actual: a2 }) = (&err, &alt_err) {
+                                Err(UpdaterError::HashMismatch {
+                                    expected: format!(
+                                        "{e1}（双源均不符，疑似全面投毒/发布事故——主源实际={a1}；换源后实际={a2}）"
+                                    ),
+                                    actual: a2.clone(),
+                                })
+                            } else {
+                                Err(alt_err)
+                            }
+                        }
+                        other => other,
+                    }
+                }
+                _ => Err(err),
+            }
+        }
+        other => other,
+    }
+}
+
+/// 分片下载（Gitee 100MB 限镜像形态）：逐片顺序追加写同一输出文件
+/// （part1..N 字节序拼接 = 原文件），全部写完后对整文件做哈希/大小校验。
+/// 单片失败即整体失败（与整资产同语义：不支持断点续传，失败重下）；
+/// progress 跨片累计（已收字节, 元数据合计——Gitee 无 size → total=0 未知）。
+async fn stream_parts_to_file(
+    plan: &PartsPlan,
+    name: &str,
+    out: &Path,
+    progress: &mut impl FnMut(u64, u64),
+    expected_sha: Option<&str>,
+) -> Result<(), UpdaterError> {
+    let mut file = std::fs::File::create(out).map_err(|e| UpdaterError::Io(e.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut received: u64 = 0;
+    for (i, url) in plan.urls.iter().enumerate() {
+        assert_download_url_allowed(url)?;
+        let mut resp = dl_client()
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| UpdaterError::Download(format!("分片 {} 请求失败：{e}", i + 1)))?;
+        if !resp.status().is_success() {
+            return Err(UpdaterError::Download(format!("分片 {} HTTP {}", i + 1, resp.status())));
+        }
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| UpdaterError::Download(format!("分片 {} 流中断：{e}", i + 1)))?
+        {
+            std::io::Write::write_all(&mut file, &chunk).map_err(|e| UpdaterError::Io(e.to_string()))?;
+            hasher.update(&chunk);
+            received += chunk.len() as u64;
+            progress(received, plan.total_size);
+        }
+    }
+    // 截断检测：元数据合计（>0 = 已知）必须与拼接后一致（GitHub 分片有 size；
+    // Gitee 无 → 跳过，完整性由哈希独挑）。
+    if plan.total_size > 0 && received != plan.total_size {
+        return Err(UpdaterError::Download(format!(
+            "分片拼接不完整：收到 {received} B，元数据合计 {} B",
+            plan.total_size
+        )));
+    }
+    if let Some(exp) = expected_sha {
+        let actual = format!("{:x}", hasher.finalize());
+        if actual != exp {
+            return Err(UpdaterError::HashMismatch { expected: exp.to_string(), actual });
+        }
+    } else if is_setup_exe(name) && received < SETUP_SIZE_FLOOR {
+        // 无哈希兑底（与整资产同口径；Gitee 源已被上游 fail-closed 拦住，
+        // 此分支实际只覆盖 GitHub 分片无边车且无 digest 的罕见态）。
+        return Err(UpdaterError::Download(format!(
+            "安装包疑似损坏：分片拼接后 {received} B 低于下限 {SETUP_SIZE_FLOOR} B（且无 sha256 可校验）"
+        )));
+    }
+    Ok(())
+}
+
 /// 尝试取边车哈希：`GET <asset.url>.sha256`，非 200/不可解析 → None（不阻断）。
 async fn fetch_sidecar_sha256(asset_url: &str) -> Option<String> {
-    let url = format!("{asset_url}.sha256");
-    let resp = meta_client().get(&url).send().await.ok()?;
+    fetch_sidecar_url_sha256(&format!("{asset_url}.sha256")).await
+}
+
+/// 取**最终形态**边车 URL 的哈希（调用方已拼好 `.sha256` 后缀——分片套装的
+/// 同源边车资产 URL 与跨源 GitHub 锚都属此类；历史上把它们再喂给
+/// [`fetch_sidecar_sha256`] 会二次追加后缀必 404，交叉锚形同虚设）。
+async fn fetch_sidecar_url_sha256(sidecar_url: &str) -> Option<String> {
+    let resp = meta_client().get(sidecar_url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -1198,6 +1391,134 @@ mod tests {
         let CheckOutcome::Available(u) = out else { panic!("单通 GitHub 应可用") };
         assert_eq!(u.source, UpdateSource::GitHub);
         assert_eq!(u.asset.url.contains("github.com"), true);
+    }
+
+    // ── Gitee 分片（.partN）：GitHub 不可达 + Gitee 缺整资产的实爆回归 ──
+
+    /// v0.6.2 实爆形态：Gitee 只有 win 安装包的 .part1/.part2 + 边车
+    /// （整资产超 100MB 限被 mirror-gitee 跳过），GitHub 不可达。
+    fn gitee_parts_only_release() -> RemoteRelease {
+        RemoteRelease {
+            tag: "v0.6.3".into(),
+            notes: "parts".into(),
+            assets: vec![
+                ReleaseAsset {
+                    name: "DSH-Desktop-Setup-0.6.3-win-x64.exe.part1".into(),
+                    url: "https://gitee.com/r/v0.6.3/DSH-Desktop-Setup-0.6.3-win-x64.exe.part1".into(),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "DSH-Desktop-Setup-0.6.3-win-x64.exe.part2".into(),
+                    url: "https://gitee.com/r/v0.6.3/DSH-Desktop-Setup-0.6.3-win-x64.exe.part2".into(),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "DSH-Desktop-Setup-0.6.3-win-x64.exe.sha256".into(),
+                    url: "https://gitee.com/r/v0.6.3/DSH-Desktop-Setup-0.6.3-win-x64.exe.sha256".into(),
+                    size: 96,
+                },
+                ReleaseAsset {
+                    name: "DSH-Desktop-Setup-0.6.3-win-arm64.exe".into(),
+                    url: "https://gitee.com/r/v0.6.3/DSH-Desktop-Setup-0.6.3-win-arm64.exe".into(),
+                    size: 0,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn parse_part_name_shapes() {
+        assert_eq!(parse_part_name("a.exe.part1"), Some(("a.exe", 1)));
+        assert_eq!(parse_part_name("a.exe.part12"), Some(("a.exe", 12)));
+        assert_eq!(parse_part_name("a.exe.part0"), None, "0 号片不存在（从 1 起）");
+        assert_eq!(parse_part_name("a.exe.part"), None, "无片号");
+        assert_eq!(parse_part_name("a.partx"), None, "片号非数字");
+        assert_eq!(parse_part_name(".part1"), None, "空 base");
+        assert_eq!(parse_part_name("a.exe"), None, "非分片名");
+        assert_eq!(parse_part_name("a.exe.part1.sha256"), None, "边车尾巴不出局成片");
+    }
+
+    #[test]
+    fn find_part_set_prefers_platform_ranked_contiguous() {
+        let rel = gitee_parts_only_release();
+        let (synth, plan) = find_part_set("windows", "x86_64", &rel.assets).expect("应命中 x64 分片套");
+        assert_eq!(synth.name, "DSH-Desktop-Setup-0.6.3-win-x64.exe");
+        assert_eq!(synth.url, plan.urls[0], "合成资产 url 指向 part1");
+        assert_eq!(plan.urls.len(), 2);
+        assert!(plan.urls[0].ends_with(".part1") && plan.urls[1].ends_with(".part2"));
+        assert_eq!(synth.size, 0, "Gitee 资产无 size → 合计 0（未知语义）");
+        assert_eq!(
+            plan.sidecar_url.as_deref(),
+            Some("https://gitee.com/r/v0.6.3/DSH-Desktop-Setup-0.6.3-win-x64.exe.sha256"),
+            "整文件边车随镜像在场，作为分片哈希锚"
+        );
+        // arm64 只有整资产（非分片形态）——find_part_set 不命中，交给
+        // 直连挑选路径（pick_asset_platform），两路互不越界。
+        assert_eq!(find_part_set("windows", "aarch64", &rel.assets), None, "arm64 整资产不属分片路径");
+        // 缺片（part1+part3）不成套。
+        let broken = RemoteRelease {
+            assets: vec![
+                rel.assets[0].clone(),
+                ReleaseAsset {
+                    name: "DSH-Desktop-Setup-0.6.3-win-x64.exe.part3".into(),
+                    url: "https://gitee.com/r/v0.6.3/DSH-Desktop-Setup-0.6.3-win-x64.exe.part3".into(),
+                    size: 0,
+                },
+            ],
+            ..rel.clone()
+        };
+        assert_eq!(find_part_set("windows", "x86_64", &broken.assets), None, "缺片不成套");
+    }
+
+    #[test]
+    fn resolve_gitee_parts_only_falls_back_to_part_set() {
+        // GitHub 不可达（实爆：api.github.com 被墙/超时），Gitee 只有分片。
+        let out = resolve_outcome(
+            "0.6.2",
+            "windows",
+            "x86_64",
+            vec![(UpdateSource::Gitee, gitee_parts_only_release())],
+            vec!["GitHub: socket hang up".into()],
+        )
+        .unwrap();
+        let CheckOutcome::Available(u) = out else { panic!("分片形态应可用") };
+        assert_eq!(u.source, UpdateSource::Gitee);
+        assert_eq!(u.next, "0.6.3");
+        assert_eq!(u.asset.name, "DSH-Desktop-Setup-0.6.3-win-x64.exe");
+        // 分片计划已登记，下载链按 urls 逐片拼接。
+        let plan = cached_parts(&u.asset.name).expect("分片计划应已登记");
+        assert_eq!(plan.urls.len(), 2);
+        assert!(plan.sidecar_url.is_some());
+        // 跨源锚也登记（GitHub CDN 可达时的额外兑底）。
+        assert!(cached_cross_anchor(&u.asset.name).is_some());
+    }
+
+    #[test]
+    fn resolve_direct_asset_wins_over_parts() {
+        // 双源都在场：GitHub 整资产 + Gitee 分片 → 直连整资产优先（现行为不变）。
+        let gh = gh_release(); // v0.5.2 含 win-x64 整资产
+        let gitee_parts = RemoteRelease { tag: "v0.5.2".into(), ..gitee_parts_only_release_v052() };
+        let out = resolve_outcome(
+            "0.5.1",
+            "windows",
+            "x86_64",
+            vec![(UpdateSource::Gitee, gitee_parts), (UpdateSource::GitHub, gh)],
+            vec![],
+        )
+        .unwrap();
+        let CheckOutcome::Available(u) = out else { panic!() };
+        assert_eq!(u.source, UpdateSource::GitHub, "整资产源优先于分片源");
+        assert_eq!(u.asset.url.contains("github.com"), true);
+    }
+
+    fn gitee_parts_only_release_v052() -> RemoteRelease {
+        let mut rel = gitee_parts_only_release();
+        rel.tag = "v0.5.2".into();
+        for a in &mut rel.assets {
+            a.name = a.name.replace("0.6.3", "0.5.2");
+            a.url = a.url.replace("0.6.3", "0.5.2");
+        }
+        rel
     }
 
     #[test]

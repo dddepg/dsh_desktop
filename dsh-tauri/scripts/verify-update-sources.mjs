@@ -213,6 +213,25 @@ function parseDigest(digest) {
 const isSidecarName = name => String(name).endsWith('.sha256');
 const isGiteeSourceArchive = name => /^v[^/]+\.(zip|tar\.gz)$/.test(String(name));
 
+// ── Gitee 分片（.partN）形态：mirror-gitee 对超限（>80MiB）资产按
+// `<原名>.part1/.part2/…` 分片镜像（每片 ≤80MiB、片号从 1 起无补零）；
+// 壳侧更新器 v0.6.3+ 支持分片识别与逐片拼接（整文件哈希锚 = `<原名>.sha256` 边车）。
+/** `<原名>.partN` → N；非分片名 → null。 */
+function parsePartIdx(name) {
+  const m = /^(.*)\.part(\d+)$/.exec(String(name));
+  if (!m || !m[1]) return null;
+  const idx = Number(m[2]);
+  return idx > 0 && String(idx) === m[2] ? idx : null;
+}
+const isPartName = name => parsePartIdx(name) != null;
+/** 期望分片数：ceil(size / Gitee 100MB 硬限)。镜像按 80MiB 切，实际片数 ≥ 此值。 */
+const expectedPartCount = size => Math.ceil(size / GITEE_FILE_LIMIT);
+/** 分片号数组是否从 1 起连续（缺片/残片都算不完整）。 */
+function isContiguousParts(idxs) {
+  const sorted = [...idxs].sort((a, b) => a - b);
+  return sorted.length > 0 && sorted.every((v, i) => v === i + 1);
+}
+
 // ── 结果收集 ────────────────────────────────────────────────────────────────
 const report = { fail: 0, warn: 0, lines: [] };
 function fail(msg) { report.fail++; console.log(`  [FAIL] ${msg}`); }
@@ -284,7 +303,22 @@ async function main() {
   for (const a of ghMain) {
     const g = geeByName.get(a.name);
     if (g) row(a.name, a.size, '?', '已镜像（大小走第 4 步 HEAD 核验）');
-    else if (a.size > GITEE_FILE_LIMIT) row(a.name, a.size, '-', '超 100MB 限，预期缺失（回落 GitHub 源）');
+    else if (a.size > GITEE_FILE_LIMIT) {
+      // 超限资产：必须以完整 .partN 分片套镜像（缺片/断号/无分片均硬错——
+      // GitHub 不可达用户只能靠这套分片更新，此检查是他们的生命线）。
+      const parts = (gee.assets || []).filter(x => String(x.name).startsWith(`${a.name}.part`));
+      const idxs = parts.map(x => parsePartIdx(x.name)).filter(v => v != null);
+      const need = expectedPartCount(a.size);
+      if (idxs.length === 0) {
+        row(a.name, a.size, '-', '超 100MB 限且无分片镜像（镜像链路未升级或失败）');
+        fail(`Gitee 缺失超限资产且无 .partN 分片: ${a.name}（${a.size} 字节）`);
+      } else if (!isContiguousParts(idxs)) {
+        row(a.name, a.size, `${parts.length}片`, '分片断号/残片（重建 Gitee release 重跑 mirror job）');
+        fail(`Gitee 分片不连续: ${a.name} 片号=[${idxs.sort((x, y) => x - y).join(',')}]（需 1..N 连续）`);
+      } else {
+        row(a.name, a.size, `${parts.length}片`, `分片镜像 x${parts.length}（≥下限 ${need} 片；汇总大小走第 4 步 HEAD 核验）`);
+      }
+    }
     else {
       row(a.name, a.size, '-', 'Gitee 缺失（未超限，非预期）');
       warn(`Gitee 缺失未超限资产: ${a.name}（${a.size} 字节）`);
@@ -295,6 +329,8 @@ async function main() {
     else warn(`Gitee 缺失边车: ${s.name}（小文件不应缺失——镜像链路故障？）`);
   }
   for (const extra of (gee.assets || [])) {
+    if (isPartName(extra.name)) continue; // 分片是镜像产物，Gitee 独有属预期
+    if (/\.merge\.bat$/.test(String(extra.name))) continue; // 分片手动合并脚本，同理
     if (!ghAssets.some(a => a.name === extra.name) && !isGiteeSourceArchive(extra.name)) {
       warn(`Gitee 独有资产（GitHub 侧没有）: ${extra.name}`);
     }
@@ -340,6 +376,26 @@ async function main() {
         else warn(`HEAD(Gitee) ${a.name}: 无 content-length，跳过镜像大小核对`);
       } catch (e) { warn(`HEAD(Gitee) ${a.name} 传输失败: ${e.message || e.code || '传输错误'}`); }
     }
+    // 分片镜像资产：逐片 HEAD 求和须等于 GitHub size（防单片截断/替换）。
+    if (!g && a.size > GITEE_FILE_LIMIT) {
+      const parts = (gee.assets || [])
+        .filter(x => String(x.name).startsWith(`${a.name}.part`))
+        .map(x => ({ idx: parsePartIdx(x.name), url: x.browser_download_url }))
+        .filter(x => x.idx != null)
+        .sort((x, y) => x.idx - y.idx);
+      let sum = 0, known = 0, headFail = 0;
+      for (const p of parts) {
+        try {
+          const h = await headWithRedirects(p.url);
+          if (h.status >= 400) { fail(`HEAD(Gitee 分片) ${a.name}.part${p.idx} 返回 ${h.status}`); headFail++; }
+          else if (h.contentLength != null) { sum += h.contentLength; known++; }
+        } catch (e) { warn(`HEAD(Gitee 分片) ${a.name}.part${p.idx} 传输失败: ${e.message || e.code || '传输错误'}`); headFail++; }
+      }
+      if (headFail === 0 && known === parts.length && parts.length > 0) {
+        if (sum !== a.size) fail(`HEAD(Gitee 分片汇总) ${a.name}: Σ=${sum} != GitHub size=${a.size}（某片截断/被替换？）`);
+        else ok(`HEAD(Gitee 分片汇总) ${a.name}: ${parts.length} 片 Σ=${sum} == GitHub size（拼接结果一致）`);
+      }
+    }
   }
 
   return exit();
@@ -372,6 +428,10 @@ function selfTest() {
   t('边车名判定', isSidecarName('a.exe.sha256') && !isSidecarName('a.exe'));
   t('Gitee 源码包判定: v0.5.2.zip / v0.5.2.tar.gz 非异常', isGiteeSourceArchive('v0.5.2.zip') && isGiteeSourceArchive('v0.5.2.tar.gz') && !isGiteeSourceArchive('DSH-Desktop-Setup-0.5.2-win-x64.exe'));
   t('Gitee 限值口径: 便携版 102477786 可镜像, deb 122865758 超限', 102477786 <= GITEE_FILE_LIMIT && 122865758 > GITEE_FILE_LIMIT);
+  t('分片名解析: a.exe.part1 → 1 / part12 → 12', parsePartIdx('a.exe.part1') === 1 && parsePartIdx('a.exe.part12') === 12);
+  t('分片名解析: 非分片/0 号/补零拒绝', parsePartIdx('a.exe') === null && parsePartIdx('a.exe.part0') === null && parsePartIdx('a.exe.part01') === null);
+  t('分片连续判定: [2,1,3] 连续 / [1,3] 断号 / [] 空', isContiguousParts([2, 1, 3]) === true && isContiguousParts([1, 3]) === false && isContiguousParts([]) === false);
+  t('期望分片数: 110MB → 2 片 / 100MB 恰好 → 1 片', expectedPartCount(110 * 1024 * 1024) === 2 && expectedPartCount(GITEE_FILE_LIMIT) === 1);
 
   console.log(failed === 0 ? '自检全部通过' : `自检失败 ${failed} 项`);
   return failed === 0 ? 0 : 1;

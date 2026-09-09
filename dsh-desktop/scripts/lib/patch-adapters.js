@@ -12,8 +12,8 @@
 //   - profile-bundle-guard 的两个 transform（app-boot / profile-boot）委托
 //     profile-bundle-heal.js 的唯一实现；
 //   - 包级补丁（web-search / menu-viewport / session-manage /
-//     open-project-dir / session-persistence）以「node_modules 根应用器」形态
-//     收口，patch-runner 直接调用，不复制其锚点逻辑。
+//     open-project-dir / workspace-pin / session-persistence）以「node_modules
+//     根应用器」形态收口，patch-runner 直接调用，不复制其锚点逻辑。
 //
 // 本模块不读写文件（除 rootAppliers 委托的 patch-*.js 外），纯声明。
 // ---------------------------------------------------------------------------
@@ -76,6 +76,8 @@ const {
 const { patchWebSearchBaseUrl } = require('../patch-web-search-baseurl');
 const { patchMenuViewport } = require('../patch-menu-viewport');
 const { patchOpenProjectDir } = require('../patch-open-project-dir');
+const { patchWorkspacePin } = require('../patch-workspace-pin');
+const { patchPresetSeat } = require('../patch-preset-seat');
 const { patchSessionPersistence } = require('../patch-session-persistence');
 // 对话删除 / 归档管理补丁（删除 + 恢复归档 + 设置内归档管理链路；孤儿进程
 // 清理已内联到 deleteSession，不再单列 session-orphans 补丁）。
@@ -119,10 +121,10 @@ const { patchSchedulerGuard } = require('./scheduler-guard-patch');
 // 工具调用 name 为空指引（unknown tool ""——ToolNotFoundError 对空 name 特判
 // 三向指引：协议错位 / 中转网关剥离 / 模型输出崩坏，非空 name 原语义不变）。
 const { patchEmptyToolName } = require('./empty-tool-name-patch');
-// 工具名怪字符归一化兑底（cardian ¬_¬ 噪音；host 解析层一次性兑底，所有插件受益）。
-const { patchToolNameMojibake } = require('./tool-name-mojibake-patch');
-// 工具 schema 布尔 required 出口清洗（Gemini 400 根治，见 schema-boolean-required-patch.js）。
-const { patchSchemaBooleanRequired } = require('./schema-boolean-required-patch');
+// 注：tool-name-mojibake（工具名 ¬ 噪音归一化）与 schema-boolean-required
+// （pi-ai google 路径布尔 required 出口清洗）均已从 boot 编排退役，其
+// rootAppliers 导出一并摘除（ta6 B 哨兵：无 spec 引用的导出即红——曾长期
+// 存量红）。实现与单测保留在各自 patch 文件，需要时重登记 spec。
 
 // ---------------------------------------------------------------------------
 // 文本模型自动识图补丁（原 main.js applyImageSendFix 内联 transform）。
@@ -2576,6 +2578,8 @@ module.exports = {
     patchWebSearchBaseUrl,
     patchMenuViewport,
     patchOpenProjectDir,
+    patchWorkspacePin,
+    patchPresetSeat,
     patchSessionPersistence,
     patchSessionManage,
     patchToolSourceCompat,
@@ -2590,8 +2594,6 @@ module.exports = {
     patchBundleArrivalRetry,
     patchSchedulerGuard,
     patchEmptyToolName,
-    patchToolNameMojibake,
-    patchSchemaBooleanRequired,
   },
   // 幂等 marker（单一数据源）：registry 与 transform 的 already 判定引用同一常量，
   // 杜绝「marker 跨模块复制漂移」。slot 系 marker 来自 runtime-patches（与 slot

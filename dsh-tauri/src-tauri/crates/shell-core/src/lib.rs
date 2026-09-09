@@ -24,5 +24,5 @@ pub mod time;
 pub use paths::DshPaths;
 pub use run_state::RunState;
 pub use settings::SettingsStore;
-pub use single_instance::SingleInstanceGuard;
+pub use single_instance::{clear_focus_request, read_focus_request, SingleInstanceGuard, write_focus_request};
 pub use upgrade::WindowState;

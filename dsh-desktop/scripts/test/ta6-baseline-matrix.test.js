@@ -163,6 +163,8 @@ const BASELINE = {
     'web-search-baseurl': 'root',
     'menu-viewport': 'root',
     'open-project-dir': 'root',
+    'workspace-pin': 'root',
+    'preset-seat-fix': 'root',
     'session-persistence': 'root',
     'session-manage': 'root',
     'tool-source-compat': 'root',
@@ -238,6 +240,8 @@ const BASELINE = {
     'web-search-baseurl': 'root',
     'menu-viewport': 'root',
     'open-project-dir': 'root',
+    'workspace-pin': 'root',
+    'preset-seat-fix': 'root',
     'session-persistence': 'root',
     'session-manage': 'root',
     'tool-source-compat': 'root',
@@ -271,16 +275,19 @@ const BASELINE = {
     'chat-scroll-autoload-older': 'target-absent',
     // conversation-assembly-resilience（BUG2）：rc.1 旧线仅 dsh 主包，无 ui-conversation → target-absent。
     'conversation-assembly-resilience': 'target-absent',
-    // reasoning-row-collapse-width（0.6.3 第一案）：同 chat-scroll-autoload-older，
+// reasoning-row-collapse-width（0.6.3 第一案）：同 chat-scroll-autoload-older，
     // rc.2 / rc.1 均不含 dsh-client-ui-chat → 两形态 target-absent。
     'reasoning-row-collapse-width': 'target-absent',
+    // workspace-pin（0.6.3）：工作区置顶 root 应用器（靶 dsh-client-ui-workspace
+    // /lib/client.js，锚点基于 open-project-dir 应用后文本）→ 两形态 'root'。
+    'workspace-pin': 'root',
     // session-unknown-event-tolerance（0.6.3 第二案）：rc.2 / rc.1 均不含
     // dsh-session-persistence → 两形态 target-absent。
     'session-unknown-event-tolerance': 'target-absent',
   },
 };
 
-test('60 补丁 × rc.2 / rc.1 双形态判定矩阵与基线快照一致（锚点漂移哨兵）', { skip: !formRoot('rc.2') ? 'pristine rc.2 stage 树不可用（.tmp-rc2-stage 缺失）' : false }, () => {
+test('62 补丁 × rc.2 / rc.1 双形态判定矩阵与基线快照一致（锚点漂移哨兵）', { skip: !formRoot('rc.2') ? 'pristine rc.2 stage 树不可用（.tmp-rc2-stage 缺失）' : false }, () => {
   const matrix = computeMatrix();
   // 打印当前矩阵（基线对照 / 升级 diff 材料）。
   console.log('[TA6 基线矩阵]');
@@ -303,11 +310,11 @@ test('60 补丁 × rc.2 / rc.1 双形态判定矩阵与基线快照一致（锚�
     `判定矩阵漂移（内核形态变化或锚点漂移；确认后更新 BASELINE 快照以显式接受新基线）：\n  ${drift.join('\n  ')}`);
 });
 
-test('基线快照自身完整性：两形态 × 60 id 全覆盖', () => {
+test('基线快照自身完整性：两形态 × 62 id 全覆盖', () => {
   const ids = new Set(PATCH_SPECS.map((s) => s.id));
-  assert.equal(ids.size, 60);
+  assert.equal(ids.size, 62);
   for (const form of Object.keys(BASELINE)) {
-    assert.equal(Object.keys(BASELINE[form]).length, 60, `${form} 基线应覆盖 59 项`);
+    assert.equal(Object.keys(BASELINE[form]).length, 62, `${form} 基线应覆盖 62 项`);
     for (const id of Object.keys(BASELINE[form])) assert.ok(ids.has(id), `${form} 基线含未知 id ${id}`);
   }
 });

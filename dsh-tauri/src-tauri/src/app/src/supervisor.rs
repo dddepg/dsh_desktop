@@ -493,6 +493,15 @@ impl Supervisor {
                     log_line(&format!("守护瀑布：回滚到最后良好快照 {id}（{reason}）"));
                     let _ = this.guard_cli_json(&["guard-restore", &id]);
                     let _ = this.guard_cli_json(&["guard-repair"]); // 回滚后再清一次遮蔽
+                    // 回滚复活的是快照里的旧 node_modules——sync/patches 步写下的
+                    // loader 隔离补丁可能被旧拷贝覆盖（v0.6.2 实爆：回滚后
+                    // float-window 缺包被旧 loader re-throw 成整树 fatal → 崩溃环
+                    // 转恢复页）。三次拉起前重打一遍补丁，缺包容错交还给树级隔离。
+                    // 失败容忍（命令内部告警不阻断），拿不到结果也不阻断回滚层。
+                    match this.guard_cli_json(&["patches-apply"]) {
+                        Some(_) => log_line("守护瀑布：回滚后已重打兼容/隔离补丁"),
+                        None => log_line("守护瀑布：回滚后补丁重打缺席（旧 payload 或命令失败，容忍继续）"),
+                    }
                     let port3 = if wsl.is_some() { 0 } else { this.reuse_or_new_port(port) };
                     match Arc::clone(&this).spawn_and_wait_ready(port3, &tx, Duration::from_secs(90)) {
                         Ok(url) => {
@@ -1226,6 +1235,47 @@ impl Supervisor {
         }
     }
 
+    /// 内核进程 pid（local 模式；WSL 模式/未启动 → None——WSL 内核不在
+    /// Windows 进程表，对 wsl.exe 包装进程采样无意义）。供假死取证采样。
+    pub fn kernel_pid(&self) -> Option<u32> {
+        if self.wsl_active().is_some() {
+            return None;
+        }
+        let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        g.kernel.as_ref().map(|c| c.id())
+    }
+
+    /// 内核进程 CPU 时间（用户+内核态，毫秒）——假死取证采样原语。
+    /// Windows：`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` +
+    /// `GetProcessTimes`；其他平台 v1 不支持（返回 None，取证行自然缺席）。
+    /// 进程已退出/权限不足 → None（探活环自会走退出处理，不教条重试）。
+    fn zombie_cpu_millis(pid: u32) -> Option<u64> {
+        #[cfg(windows)]
+        {
+            use windows_api::Win32::Foundation::{CloseHandle, FILETIME};
+            use windows_api::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+            unsafe {
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+                let mut creation = FILETIME::default();
+                let mut exit = FILETIME::default();
+                let mut kernel = FILETIME::default();
+                let mut user = FILETIME::default();
+                let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+                let _ = CloseHandle(handle);
+                // windows 0.61：GetProcessTimes 返回 Result<(), Error>。
+                if ok.is_err() {
+                    return None;
+                }
+                Some(filetime_ms(&kernel).saturating_add(filetime_ms(&user)))
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+            None
+        }
+    }
+
     /// 探活循环：TCP connect + 就绪超时。
     /// HTTP 应用层探活：读到任何响应字节（含 404/401——内核对 / 至少回
     /// index/错误页）即证明事件循环在转。TCP 握手由 OS 协议栈完成，进程
@@ -1279,7 +1329,13 @@ impl Supervisor {
             //     会把崩溃自动重启刚拉起的新内核一并杀掉（复活-再杀循环）。
             let mut consecutive = 0usize;
             let mut zombie = 0usize;
-            let mut defer = 0usize; // 连续「有回合但 HTTP 无响应」的阈值窗口数（stale 兜底）
+            let mut defer = 0usize; // 连续「有回合但 HTTP 无响应」的阈值窗口数（stale 兜底，见 ZOMBIE_DEFER_MAX）
+            // 假死取证基线（v0.6.3）：上一 tick 的 (时刻, 内核进程 CPU 毫秒)。
+            // 健康 tick 复位——跨间隙的陈旧基线会把休眠窗口的 Δ 算进来误导定性。
+            let mut last_cpu: Option<(std::time::Instant, u64)> = None;
+            // 取证序列（最近 6 条短标签）：假死强杀时随 incident 落盘，
+            // 用户反馈一份事故报告即携带完整定性证据链。
+            let mut cpu_series: std::collections::VecDeque<String> = std::collections::VecDeque::new();
             loop {
                 std::thread::sleep(Duration::from_secs(3));
                 {
@@ -1302,6 +1358,8 @@ impl Supervisor {
                     consecutive = 0;
                     zombie = 0;
                     defer = 0;
+                    last_cpu = None;
+                    cpu_series.clear();
                     continue;
                 }
                 if !tcp_ok {
@@ -1345,9 +1403,52 @@ impl Supervisor {
                 // TCP 通、HTTP 无响应：假死形态。
                 zombie += 1;
                 let _ = tx.send(SupervisorEvent::ZombieSuspect { consecutive: zombie });
-                log_line(&format!("内核假死可疑（端口通、HTTP 无响应）×{zombie}"));
+                // 假死取证（v0.6.3）：每 tick 采样内核进程 CPU 时间增量——
+                // 忙环形态（同步 JS 长任务/上下文压缩独占事件循环）Δ≈窗口
+                // 时长；阻塞/挂起形态 Δ≈0。v0.6.2 用户实爆（×1..×7 反复重置
+                // 后 kill -1）只有「无响应」一条线索，取证三件套之 CPU 采样
+                // 补齐定性依据（另两件：stdout 停点不可信已由 HTTP 探活覆盖、
+                // 文件 dump 归事故报告链）。
+                let cpu_note = {
+                    let now = std::time::Instant::now();
+                    let cur = this.kernel_pid().and_then(Supervisor::zombie_cpu_millis);
+                    let delta = match (last_cpu, cur) {
+                        (Some((t, prev)), Some(c)) => {
+                            Some((now.duration_since(t).as_millis() as u64, c.saturating_sub(prev)))
+                        }
+                        _ => None,
+                    };
+                    last_cpu = cur.map(|c| (now, c));
+                    match delta {
+                        // 判据：Δ > 窗口 25% → 忙环；否则阻塞/挂起（阈值保守，
+                        // 只为日志定性不当判死依据——判死仍走回合感知阈值）。
+                        Some((win_ms, d)) if win_ms > 0 => {
+                            let verdict = if d * 4 > win_ms { "忙环（事件循环被同步长任务独占）" } else { "阻塞/挂起（CPU 几乎无消耗）" };
+                            cpu_series.push_back(format!("×{zombie} Δ={d}ms/{win_ms}ms {verdict}"));
+                            cpu_series.truncate(6);
+                            format!("（取证：{win_ms}ms 窗口 CPU Δ={d}ms，{verdict}）")
+                        }
+                        Some((_, _)) => String::new(),
+                        None => {
+                            cpu_series.push_back(format!("×{zombie} 采样缺席"));
+                            cpu_series.truncate(6);
+                            "（取证不可用：非 Windows/WSL 模式/采样失败）".to_string()
+                        }
+                    }
+                };
+                log_line(&format!("内核假死可疑（端口通、HTTP 无响应）×{zombie}{cpu_note}"));
                 if Supervisor::should_restart_zombie(zombie, crate::session_notify::active_turns()) {
                     log_line("内核假死判定成立（连续 60s HTTP 无响应，20×3s 探活），受控重启");
+                    // 事故报告：携 CPU 定性证据链（忙环→内核侧同步长任务；阻塞→
+                    // 锁/等待），用户反馈一份即够——不再需要现场翻 desktop.log。
+                    this.guard_incident(
+                        "zombie-restart",
+                        &format!(
+                            "内核假死受控重启（连续 60s HTTP 无响应；进行中 agent 回合 {} 个）。\nCPU 取证近况：{}\n完整时序见 desktop.log（假死可疑条目），内核输出见 dsh-web.log 尾部。",
+                            crate::session_notify::active_turns(),
+                            if cpu_series.is_empty() { "（缺席：非 Windows/WSL 模式）".to_string() } else { cpu_series.iter().cloned().collect::<Vec<_>>().join("；") }
+                        ),
+                    );
                     this.kill_kernel();
                     this.on_kernel_exit(None, &tx);
                     return;
@@ -1361,6 +1462,14 @@ impl Supervisor {
                     defer += 1;
                     if defer >= ZOMBIE_DEFER_MAX {
                         log_line("内核假死且持续无响应（回合信号可能失效），强制受控重启");
+                        this.guard_incident(
+                            "zombie-restart-deferred",
+                            &format!(
+                                "内核假死强制受控重启（{ZOMBIE_DEFER_MAX} 个阈值窗口无响应且回合信号滞留，进行中回合计数 {}）。\nCPU 取证近况：{}\n若取证呈忙环：回合真实仍在跑（长压缩/推理），可考虑调大 ZOMBIE_DEFER_MAX；若呈阻塞：回合信号已失效，请反馈 dsh-web.log 尾部。",
+                                crate::session_notify::active_turns(),
+                                if cpu_series.is_empty() { "（缺席：非 Windows/WSL 模式）".to_string() } else { cpu_series.iter().cloned().collect::<Vec<_>>().join("；") }
+                            ),
+                        );
                         this.kill_kernel();
                         this.on_kernel_exit(None, &tx);
                         return;
@@ -1705,6 +1814,13 @@ fn port_holder_diag_text(port: u16) -> String {
     }
 }
 
+/// FILETIME（100ns 单位）→ 毫秒（假死取证采样原语的换算半边）。
+#[cfg(windows)]
+fn filetime_ms(ft: &windows_api::Win32::Foundation::FILETIME) -> u64 {
+    let raw = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
+    raw / 10_000
+}
+
 fn log_line(msg: &str) {
     // T4 反馈：无时间戳时恢复耗时只能外部计时——补 HH:MM:SS 前缀。
     let secs = std::time::SystemTime::now()
@@ -2015,6 +2131,34 @@ mod tests {
         assert!(!Supervisor::should_restart_zombie(100, 2), "回合数 >0 恒豁免");
         // 回合结束（0）后恢复判死。
         assert!(Supervisor::should_restart_zombie(20, 0));
+    }
+
+    /// 假死取证采样：自身进程 CPU 时间可采且单调递增（spin 忙等 ≥50ms
+    /// 后必有增量）；已死 pid → None（探活环不教条重试）。Windows 实测，
+    /// 其他平台采样原语缺席（取证行自然缺席，不构成失败）。
+    #[test]
+    #[cfg(windows)]
+    fn zombie_cpu_millis_samples_own_process() {
+        let a = Supervisor::zombie_cpu_millis(std::process::id()).expect("自身进程 CPU 时间应可采样");
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(60) {
+            std::hint::spin_loop();
+        }
+        let b = Supervisor::zombie_cpu_millis(std::process::id()).expect("二次采样");
+        assert!(b > a, "spin 忙等后 CPU 时间必须增加: {a} -> {b}");
+        // 几乎不可能存活的 pid（Windows pid 区间外大值）→ 采样失败 None。
+        assert_eq!(Supervisor::zombie_cpu_millis(3_999_999), None, "死 pid 不得采出 CPU 时间");
+    }
+
+    /// FILETIME → ms 换算：100ns 单位、高低位拼接。
+    #[test]
+    #[cfg(windows)]
+    fn filetime_ms_conversion() {
+        use windows_api::Win32::Foundation::FILETIME;
+        let ft = FILETIME { dwLowDateTime: 10_000, dwHighDateTime: 0 }; // 10000×100ns = 1ms
+        assert_eq!(filetime_ms(&ft), 1);
+        let ft_hi = FILETIME { dwLowDateTime: 0, dwHighDateTime: 1 }; // 2^32×100ns ≈ 429.5s
+        assert_eq!(filetime_ms(&ft_hi), 429_496);
     }
 
     /// #122/#129 假死形态的确定性验证：TCP 握手被 OS 协议栈代答、应用层

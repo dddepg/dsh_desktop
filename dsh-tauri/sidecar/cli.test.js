@@ -104,6 +104,21 @@ test('boot 容忍分级：自愈类子失败不阻断（坏 patch → 自愈 →
   assert.ok(fs.readFileSync(patchFile, 'utf8').includes('recovered by DSH Desktop'), '自愈后应含重置标记');
 });
 
+test('patches-apply：单步重打补丁幂等（回滚层消费面）', { skip: !HAVE_DEPS }, (t) => {
+  const sb = sandbox(t.name);
+  t.after(() => fs.rmSync(sb.dir, { recursive: true, force: true }));
+  assert.strictEqual(cli(['boot'], { env: sb.env, timeout: 180_000 }).code, 0, '前置 boot 建档');
+  // 回滚层消费面契约：ok 恒 true（异常也容忍进 warning）、可重复调用
+  // （幂等重打），不产出 boot 级 steps 结构（单步命令）。
+  for (let i = 0; i < 2; i += 1) {
+    const r = cli(['patches-apply'], { env: sb.env });
+    assert.strictEqual(r.code, 0, `第 ${i + 1} 次退出码（stderr: ${r.stderr.slice(-300)}）`);
+    assert.strictEqual(r.json.ok, true, JSON.stringify(r.json));
+    assert.strictEqual(r.json.warning, null, `重打不应告警: ${JSON.stringify(r.json)}`);
+    assert.ok(!Array.isArray(r.json.steps), '单步命令不产 boot 级 steps');
+  }
+});
+
 test('plugin-list：boot 后可列出 companion 插件', { skip: !HAVE_DEPS }, (t) => {
   const sb = sandbox(t.name);
   t.after(() => fs.rmSync(sb.dir, { recursive: true, force: true }));

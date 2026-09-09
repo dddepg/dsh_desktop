@@ -768,11 +768,42 @@ jobs:
           fi
           echo "OK: $f ($size bytes)"
 
+      - name: Assemble portable lite layout (no bundled node)
+        # LITE 变体：删 vendor/node/node.exe——机器上已有 node 的用户选它，
+        # 体积更小；与带 node 的主便携 zip 共存发布。
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.ver.outputs.version }}"
+          if (Test-Path "portable-lite") { Remove-Item "portable-lite" -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path "portable-lite" | Out-Null
+          Copy-Item "portable/DSH Desktop" "portable-lite/DSH Desktop" -Recurse -Force
+          $nodeExe = "portable-lite/DSH Desktop/resources/dsh-desktop/vendor/node/node.exe"
+          if (Test-Path $nodeExe) { Remove-Item $nodeExe -Force }
+          Compress-Archive -Path "portable-lite/DSH Desktop" -DestinationPath "DSH-Desktop-Portable-$VERSION-win-x64-lite.zip" -Force
+          $mb = [math]::Round((Get-Item "DSH-Desktop-Portable-$VERSION-win-x64-lite.zip").Length / 1MB, 1)
+          Write-Host "portable lite zip: DSH-Desktop-Portable-$VERSION-win-x64-lite.zip ($mb MB)"
+
+      - name: Verify portable lite zip (version + size)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=${{ steps.ver.outputs.version }}
+          f="DSH-Desktop-Portable-${VERSION}-win-x64-lite.zip"
+          [ -f "$f" ] || { echo "::error::便携 lite zip 缺失: $f"; exit 1; }
+          size=$(stat -c%s "$f")
+          if [ "$size" -lt 52428800 ]; then
+            echo "::error::便携 lite zip 体积异常（${size} 字节 < 50MB）"
+            exit 1
+          fi
+          echo "OK: $f ($size bytes)"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: win-x64-portable
-          path: DSH-Desktop-Portable-*-win-x64.zip
+          path: |
+            DSH-Desktop-Portable-*-win-x64.zip
+            DSH-Desktop-Portable-*-win-x64-lite.zip
           if-no-files-found: error
 
   build-linux:
@@ -1428,13 +1459,17 @@ jobs:
   # ── Gitee 镜像（自动更新第二源）─────────────────────────────────────────
   # 客户端壳侧更新器轮询 GitHub + Gitee 双源 releases/latest，国内用户主要打
   # Gitee。镜像范围=GitHub release 全部资产（含 .sha256 边车），约束与策略：
-  #   · Gitee 单附件上限 100MB（104857600 字节）——超限主资产（AppImage/deb/
-  #     dmg）跳过并告警（壳侧会回落 GitHub 源下载，属预期）；边车均为小文件
+  #   · Gitee 单附件上限 100MB（104857600 字节）——超限主资产（v0.6.x 起
+  #     win-x64 安装包 ~110MB 即超）按 `<原名>.part1/.part2/…` 分片镜像
+  #     （每片 ≤80MiB；壳侧更新器 v0.6.3 起支持分片识别、逐片拼接后按
+  #     `<原名>.sha256` 边车整文件校验）——此前「跳过+回落 GitHub」对 GitHub
+  #     不可达的用户等于永久无法自动更新（v0.6.2 实爆）；边车均为小文件
   #     不受限，必须全部镜像。
   #   · Gitee v5 API 无「删除单个附件」端点（重复上传会产生重复条目），幂等
   #     策略：同名同大小→跳过；同名不同大小→删除整个 Gitee release 重建
   #     （对齐 GitHub 侧 delete-then-upload 纪律；dispatch 重建资产后重跑
-  #     本 job 即完成镜像同步）。
+  #     本 job 即完成镜像同步；重建同时清除陈旧分片，防资产缩小后残片污染
+  #     客户端拼接——v5 无删单附件端点，残片只能靠重建清理）。
   #   · Gitee 侧自动附带 tag 源码包（v*.zip / v*.tar.gz），属平台行为不算缺失。
   #   · 依赖仓库 secret：GITEE_TOKEN（gitee.com 私人令牌，需 projects 权限）。
   mirror-gitee:
@@ -1577,7 +1612,7 @@ jobs:
           echo "OK: Gitee release id=${REL_ID}"
 
       - name: Upload assets to Gitee
-        # 上传缺失资产；>100MB 跳过（壳侧回落 GitHub 源，预期行为）；
+        # 上传缺失资产；超限（>80MiB）资产按 `<原名>.partN` 分片镜像；
         # 已存在同名同大小跳过（幂等）。边车是小文件，永远在镜像范围内。
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
@@ -1593,26 +1628,13 @@ jobs:
           # 收口由下方 Verify mirrored assets 兜底：缺失/大小不符仍会拒发。
           declare -A SEEN
           FAIL=0
-          upload_one() {
-            local f="$1" name size remote attempt
+          # 带重试的原生上传（路径级原语：不做存在性/大小判定）。
+          # Gitee 上传 API 大文件慢：单文件 10 分钟上限 + 4 次退避重试
+          #（20/40/60s——v0.5.7 首发实测单文件偶发连败两次即退）。
+          upload_raw() {
+            local f="$1" name attempt
             name=$(basename "$f")
-            if [ -n "${SEEN[$name]:-}" ]; then return 0; fi
-            SEEN[$name]=1
-            size=$(stat -c%s "$f")
-            # Gitee v5 资产对象无 size 字段（只有 name + browser_download_url），
-            # 存在性按 name 判定；大小由 sha256 边车兜底。
-            remote=$(jq -r --arg n "$name" '.assets[]? | select(.name==$n) | .name' gitee-now.json | head -1)
-            if [ -n "$remote" ] && [ "$remote" != "null" ]; then
-              echo "跳过（已镜像）: $name"
-              return 0
-            fi
-            if [ "$size" -gt "$LIMIT" ]; then
-              echo "::warning::跳过超 Gitee 限制的资产: $name（${size} 字节；壳侧自动回落 GitHub 源下载）"
-              return 0
-            fi
-            echo "上传到 Gitee: $name（${size} 字节）"
-            # Gitee 上传 API 大文件慢：单文件 10 分钟上限 + 4 次退避重试
-            #（20/40/60s——v0.5.7 首发实测单文件偶发连败两次即退）。
+            echo "上传到 Gitee: $name（$(stat -c%s "$f") 字节）"
             for attempt in 1 2 3 4; do
               if curl -sf --max-time 600 -X POST "${GITEE_API}/repos/${GITEE_REPO}/releases/${REL_ID}/attach_files?access_token=${GITEE_TOKEN}" \
                 -F "file=@${f}" > /dev/null; then
@@ -1625,6 +1647,62 @@ jobs:
             done
             return 1
           }
+          upload_one() {
+            local f="$1" name size remote
+            name=$(basename "$f")
+            if [ -n "${SEEN[$name]:-}" ]; then return 0; fi
+            SEEN[$name]=1
+            size=$(stat -c%s "$f")
+            # Gitee v5 资产对象无 size 字段（只有 name + browser_download_url），
+            # 存在性按 name 判定；大小由 sha256 边车兜底。
+            remote=$(jq -r --arg n "$name" '.assets[]? | select(.name==$n) | .name' gitee-now.json | head -1)
+            if [ -n "$remote" ] && [ "$remote" != "null" ]; then
+              echo "跳过（已镜像）: $name"
+              return 0
+            fi
+            if [ "$size" -gt "$LIMIT" ]; then
+              # 超 Gitee 单附件限：按 `<原名>.partN` 分片镜像（每片 ≤LIMIT、
+              # 片号从 1 起无补零、分片数 ≤9）；壳侧 v0.6.3+ 逐片拼接后按
+              # `<原名>.sha256` 边车整文件校验。任一片失败 → 整体失败
+              # （半套分片 = 客户端拼接必坏，宁可拒发）。幂等：逐片同名跳过。
+              local parts_dir="parts-$$" pc p
+              rm -rf "$parts_dir"; mkdir -p "$parts_dir"
+              split -b "$LIMIT" -a 1 --numeric-suffixes=1 "$f" "$parts_dir/$name.part"
+              pc=$(ls "$parts_dir" | wc -l)
+              if [ "$pc" -gt 9 ]; then
+                echo "::error::分片数 $pc > 9 超出命名宽度（-a 1）：$name——需调大 -a 或 LIMIT"
+                rm -rf "$parts_dir"; return 1
+              fi
+              for p in "$parts_dir"/*; do
+                upload_raw "$p" || { rm -rf "$parts_dir"; return 1; }
+              done
+              # 手动救援脚本：与分片同目录摆放后双击合并（GitHub/Gitee 双源
+              # 都不通的老壳用户——0.4.x 实爆形态——只能手动下载；merge.bat
+              # + certutil 哈希核对让纯手动路径也可自证完整性）。CRLF + ASCII
+              # （cmd 对 LF 容忍但别赌；中文在老代码页会乱码）。
+              local plist=""
+              for p in "$parts_dir"/*.part[0-9]; do
+                plist="${plist}$(basename "$p")+"
+              done
+              plist="${plist%+}"
+              printf '@echo off\r\n' > "$parts_dir/$name.merge.bat"
+              printf 'rem DSH Desktop split-asset merger (auto-generated by release pipeline)\r\n' >> "$parts_dir/$name.merge.bat"
+              printf 'rem Keep this .bat together with the .partN files, then double-click to merge.\r\n' >> "$parts_dir/$name.merge.bat"
+              printf 'setlocal\r\n' >> "$parts_dir/$name.merge.bat"
+              printf 'cd /d "%%~dp0"\r\n' >> "$parts_dir/$name.merge.bat"
+              printf 'copy /b %s "%s" >nul\r\n' "$plist" "$name" >> "$parts_dir/$name.merge.bat"
+              printf 'if errorlevel 1 (\r\n  echo Merge failed: check all %d parts are in this folder.\r\n  pause\r\n  exit /b 1\r\n)\r\n' "$pc" >> "$parts_dir/$name.merge.bat"
+              printf 'echo Merged OK: %s\r\n' "$name" >> "$parts_dir/$name.merge.bat"
+              printf 'echo Compare SHA256 below with %s.sha256:\r\n' "$name" >> "$parts_dir/$name.merge.bat"
+              printf 'certutil -hashfile "%s" SHA256\r\n' "$name" >> "$parts_dir/$name.merge.bat"
+              printf 'pause\r\n' >> "$parts_dir/$name.merge.bat"
+              upload_raw "$parts_dir/$name.merge.bat" || { rm -rf "$parts_dir"; return 1; }
+              rm -rf "$parts_dir"
+              echo "  分片镜像完成: $name（${size} 字节 → ${pc} 片 + merge.bat）"
+              return 0
+            fi
+            upload_raw "$f"
+          }
           for f in gh-assets/*-win-x64.exe gh-assets/*; do
             if [ -f "$f" ]; then upload_one "$f" || FAIL=1; fi
           done
@@ -1634,8 +1712,9 @@ jobs:
           fi
 
       - name: Verify mirrored assets
-        # 镜像收口：重查 Gitee release，每个 ≤100MB 的源资产（含全部边车）
-        # 必须存在且大小与 GitHub 侧逐字节一致。
+        # 镜像收口：重查 Gitee release，每个 ≤limit 的源资产（含全部边车）
+        # 必须存在且大小与 GitHub 侧逐字节一致；超限资产必须以完整
+        # `<原名>.part1..N` 分片套在场（缺片/残片均拒发）。
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
@@ -1650,7 +1729,26 @@ jobs:
             name=$(basename "$f")
             size=$(stat -c%s "$f")
             if [ "$size" -gt "$LIMIT" ]; then
-              printf '%-52s %12d bytes  [超限跳过，预期缺失]\n' "$name" "$size"
+              # 超限资产：分片套完整性校验。片号 1..N 全在场 + 无多余残片
+              # （残片会把客户端拼接成错误字节流——哈希必炸，宁可此处拒发；
+              # v5 无删单附件端点，清理路径 = 删整个 release 重跑本 job）。
+              n=$(( (size + LIMIT - 1) / LIMIT ))
+              part_missing=0
+              for i in $(seq 1 "$n"); do
+                remote=$(jq -r --arg pn "$name.part$i" '.assets[]? | select(.name==$pn) | .name' gitee-final.json | head -1)
+                if [ -z "$remote" ] || [ "$remote" = "null" ]; then
+                  echo "::error::Gitee 缺失分片: $name.part$i（${i}/${n}）"
+                  fail=1
+                  part_missing=1
+                fi
+              done
+              remote_parts=$(jq -r --arg base "$name.part" '[.assets[]?.name | select(startswith($base))] | length' gitee-final.json)
+              if [ "$remote_parts" -gt "$n" ]; then
+                echo "::error::Gitee 分片数 ${remote_parts} > 期望 ${n}（$name——陈旧残片，重建 Gitee release 后重跑本 job）"
+                fail=1
+              elif [ "$part_missing" -eq 0 ]; then
+                printf '%-52s %12d bytes  [分片镜像 x%d OK]\n' "$name" "$size" "$n"
+              fi
               continue
             fi
             remote=$(jq -r --arg n "$name" '.assets[]? | select(.name==$n) | .name' gitee-final.json | head -1)
@@ -1670,4 +1768,4 @@ jobs:
             fail=1
           fi
           [ "$fail" -eq 0 ] || exit 1
-          echo "OK: ${mirrored} 个资产镜像一致（含 ${side_mirrored} 个边车；>100MB 主资产按预期跳过）"
+          echo "OK: ${mirrored} 个资产镜像一致（含 ${side_mirrored} 个边车；超限资产以 .partN 分片镜像）"

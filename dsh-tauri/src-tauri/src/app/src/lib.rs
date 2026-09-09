@@ -395,8 +395,21 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 单实例锁 ----
     let paths = shell_core::DshPaths::resolve();
-    let guard = shell_core::SingleInstanceGuard::acquire(paths.app_data.join("single-instance.lock"))
-        .map_err(|_| "DSH Desktop 已在运行")?;
+    let guard = match shell_core::SingleInstanceGuard::acquire(paths.app_data.join("single-instance.lock")) {
+        Ok(g) => g,
+        Err(()) => {
+            // 已有实例在跑：请求唤起其主窗 → 静默退出。绝不向上抛 Err——
+            // setup-Err 会被 Tauri 当启动失败 panic（v0.6.2 实爆：三次二次
+            // 启动全在 panics.log 留「Failed to setup app: DSH Desktop 已在
+            // 运行」，用户双击无任何可见反馈）。插件管道（正常路径）之外
+            // 的窗口期由 focus-request 文件兜底。
+            if let Err(e) = shell_core::write_focus_request(&paths.app_data) {
+                logging::early_log(&format!("[boot] 单实例二次启动：写唤起请求失败（不影响退出）: {e}"));
+            }
+            logging::early_log("[boot] 单实例二次启动：已请求唤起运行中实例的主窗，第二实例静默退出");
+            std::process::exit(0);
+        }
+    };
     *INSTANCE_LOCK.lock().unwrap_or_else(|p| p.into_inner()) = Some(guard);
 
     // ---- 主窗 ----
@@ -432,6 +445,16 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("DSH_TAURI_DEVTOOLS").ok().as_deref() == Some("1") {
         #[cfg(debug_assertions)]
         main_win.open_devtools();
+    }
+
+    // 单实例唤起请求 watcher：轮询 focus-request（第二实例在插件管道
+    // 未就位窗口期落下的请求）→ 唤起主窗。低频 1.5s 轮询；退出态停摆。
+    {
+        let watch_handle = app.handle().clone();
+        let watch_dir = paths.app_data.clone();
+        let _ = std::thread::Builder::new()
+            .name("single-instance-focus".into())
+            .spawn(move || watch_focus_requests(watch_handle, watch_dir));
     }
 
     // ---- supervisor（PoC 模式不起内核）----
@@ -474,16 +497,35 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let handle = app.handle().clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(15));
-            match tauri::async_runtime::block_on(commands::updater_client::check_latest(env!("CARGO_PKG_VERSION"))) {
-                Ok(commands::updater_client::CheckOutcome::Available(u)) => {
-                    route_log(format!(
-                        "[update] 检测到客户端新版本 {} → {}（{}，{}）",
-                        u.current, u.next, u.source, u.asset.name
-                    ));
-                    let _ = handle.emit("client-update-available", &u);
+            // 定期重检（v0.6.3）：不止启动 15s 查一次——常年挂机用户（桌面端
+            // 主用法）也要在当天内被新版本敲门。6h 一查（双源元数据 GET，
+            // 成本可忽略）；UpToDate 零打扰；退出态停摆；emit 包 panic 隔离
+            //（退出竞态下戳已 Destroyed 的事件循环会 panic，同 route 线口径）。
+            loop {
+                if EXITING.load(Ordering::Relaxed) {
+                    return;
                 }
-                Ok(commands::updater_client::CheckOutcome::UpToDate) => {}
-                Err(e) => route_log(format!("[update] 启动更新检查失败（静默忽略）：{e}")),
+                match tauri::async_runtime::block_on(commands::updater_client::check_latest(env!("CARGO_PKG_VERSION"))) {
+                    Ok(commands::updater_client::CheckOutcome::Available(u)) => {
+                        route_log(format!(
+                            "[update] 检测到客户端新版本 {} → {}（{}，{}）",
+                            u.current, u.next, u.source, u.asset.name
+                        ));
+                        let h = handle.clone();
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                            let _ = h.emit("client-update-available", &u);
+                        }));
+                    }
+                    Ok(commands::updater_client::CheckOutcome::UpToDate) => {}
+                    Err(e) => route_log(format!("[update] 更新检查失败（静默忽略）：{e}")),
+                }
+                for _ in 0..(6 * 60) {
+                    // 分段睡眠：退出响应 ≤6s，不生硬 sleep 6h。
+                    if EXITING.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(6));
+                }
             }
         });
     }
@@ -762,6 +804,40 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+/// 单实例唤起请求轮询（兜底通道）：第二实例在插件管道未就位/失败的
+/// 窗口期会写 `app_data/focus-request`；此处 1.5s 轮询发现即唤起主窗。
+/// millis 变化去重（同一次请求只唤一次）；退出态停摆；唤窗动作经
+/// catch_unwind 隔离——退出竞态下戳已 Destroyed 的事件循环会 panic
+/// （与 route_one_event 同口径，watcher 线程绝不过早死）。
+fn watch_focus_requests(app: tauri::AppHandle, app_data: std::path::PathBuf) {
+    let mut last_seen: Option<u128> = None;
+    loop {
+        if EXITING.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some((_, millis)) = shell_core::read_focus_request(&app_data) {
+            if last_seen != Some(millis) {
+                last_seen = Some(millis);
+                shell_core::clear_focus_request(&app_data);
+                let h = app.clone();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    if let Some(w) = h.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.unminimize();
+                        let _ = w.set_focus();
+                    }
+                }));
+                if r.is_err() {
+                    route_log("[boot] 单实例唤起主窗 panic（已隔离，watcher 继续在岗）".to_string());
+                } else {
+                    route_log("[boot] 单实例：已唤起主窗（第二实例请求）".to_string());
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+    }
 }
 
 /// 托盘：显示主窗 / 打开日志 / 退出（退出前同步杀树）。

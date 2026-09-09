@@ -808,8 +808,16 @@ function apply(ctx, config) {
   const customRegistration = ctx.llm.registerAdapter([PROVIDER_ID], customAdapter);
   // alpha.4 迁移：旧的 install 辅助已从 dsh-settings 移除，改为
   // ctx.settings.register 直注册（ns 裸字符串）+ scope.get 取值 + scope.watch 热更。
+  // 两级降级：携带旧 config 注册失败（旧格式存储解析不过）时空 base 重试一次，
+  // 热更链路恢复而不是永久降级为仅环境变量配置。
   try {
-    const scope = ctx.settings.register(NS, Config, { base: config || {} });
+    let scope;
+    try {
+      scope = ctx.settings.register(NS, Config, { base: config || {} });
+    } catch (baseError) {
+      console.warn("[openclaw-bridge] stored config rejected, retrying with defaults: " + ((baseError && baseError.message) || baseError));
+      scope = ctx.settings.register(NS, Config, { base: {} });
+    }
     liveConfig = () => scope.get(); // source 是 () => scope.get() 的取值函数
     scope.watch(() => {
       // 新映射会话（新 model 名）会使用新配置；已有会话保持连续性。

@@ -52,7 +52,10 @@ url = "2"
 #   SHGetKnownFolderPath(FOLDERID_Desktop)、SHChangeNotify 刷图标缓存；
 # - Win32_System_Com：CoInitializeEx/CoCreateInstance/CoTaskMemFree；
 # - Win32_Storage_FileSystem：IShellLinkW::GetPath（WIN32_FIND_DATAW 形参）。
-windows-api = { package = "windows", version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_System_Registry"] }
+# - Win32_System_Registry：PATH 幂等追加（dsh_cli.rs）读写 HKCU\Environment；
+# - Win32_System_Threading：内核假死取证（supervisor.rs OpenProcess +
+#   GetProcessTimes 采样 CPU 时间增量，区分忙环/阻塞形态）；
+windows-api = { package = "windows", version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # 集成测试（tests/sponsor_window.rs）用 mock runtime 走生产同款建窗路径。

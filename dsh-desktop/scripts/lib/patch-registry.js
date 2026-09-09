@@ -808,6 +808,43 @@ const PATCH_SPECS = [
     failLog: (root, err) => '打开项目目录补丁失败(' + root + '): ' + err.message,
   },
   {
+    // 侧栏工作区置顶（v0.6.3）：⋯ 菜单「置顶到列表顶部」，可多选，置顶行按
+    // 置顶时间降序压顶；localStorage 持久化。锚点基于 open-project-dir 应用
+    // 后的文本（order 200 → 本项 215 在其后），两者改动面互不重叠。
+    id: 'workspace-pin',
+    group: 'package',
+    order: 215,
+    kind: 'root',
+    layout: 'nm-roots',
+    wslLayout: 'nm-roots',
+    apply: rootAppliers.patchWorkspacePin,
+    marker: null,
+    requires: [],
+    failPolicy: 'warn',
+    cli: false,
+    successLog: (root) => '工作区置顶补丁: 已应用到 ' + root,
+    failLog: (root, err) => '工作区置顶补丁失败(' + root + '): ' + err.message,
+  },
+  {
+    // 模式选择 chip 锁死修复（v0.6.3-beta.4）：内核 AgentPresetSeatController.apply()
+    // 内 this.remotePresets(ctx) 双重错误（模块级函数误加 this + ctx 应为 this.ctx）
+    // → 首次选择即抛 TypeError，busy 卡 true，chip 永久 disabled（用户实报：
+    // 新建对话后选一次模式按钮按不动）。
+    id: 'preset-seat-fix',
+    group: 'package',
+    order: 216,
+    kind: 'root',
+    layout: 'nm-roots',
+    wslLayout: 'nm-roots',
+    apply: rootAppliers.patchPresetSeat,
+    marker: null,
+    requires: [],
+    failPolicy: 'warn',
+    cli: false,
+    successLog: (root) => '模式 chip 锁死补丁: 已应用到 ' + root,
+    failLog: (root, err) => '模式 chip 锁死补丁失败(' + root + '): ' + err.message,
+  },
+  {
     id: 'session-persistence',
     group: 'package',
     order: 210,

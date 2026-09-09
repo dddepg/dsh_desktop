@@ -6,6 +6,66 @@ DeepSeek Harness（dsh）的 Windows 桌面客户端：内置独立 Node 运行�
 
 ## [Unreleased]
 
+### fix(better-sidebar)：导航栏与文件目录巨隙 + 拖动左边框导航条阶梯跳变
+
+- **症状一（间隙太大）**：对话导航栏与文件目录面板之间有一个约「explorer 宽 + 8px
+  （可能叠加 56px）」的固定巨隙。**根因**：面板让位叠了三套机制——layout.css 的
+  #root margin（正确）+ `.cHLsAW_frame` 的 `--dsh-official-push` padding 推挤
+  + host 的 56px clearance；其中 push 的 syncPush 公式把 panel 内部的 explorer
+  rail 再叠一份（双计），对话列被推离面板整整一条 explorer 宽。
+- **症状二（拖动突变）**：拖面板左边框时导航条不恒等跟随。**根因**：push 由
+  MutationObserver + **400ms 轮询**兑底同步，拖动中导航条呈 0.4s 阶梯跳变；
+  且官方 AppFrame 根自带 `grid-template-columns 0.3s` 过渡，重排落在其上时
+  导航条/列宽以缓动追赶指针。
+- **修法**（src + lib 双轨）：删 push 整套（syncPush + MutationObserver +
+  400ms 轮询 + `.cHLsAW_frame` padding 规则）与 host 的 56px clearance 实验
+  规则，让位回归 #root margin 单一机制（面板左缘恒等于对话列右缘，零间隙）；
+  `body[data-dsh-sidebar-dragging]` 时官方 AppFrame 根（cHLsAW_frame）也
+  `transition: none !important`（hash 漂移时规则自然失配，无害）。导航条强显
+  规则（`._9JjVLG_slot`，旧内核 hash）保留并注明依赖。
+- **验证**：实机 CDP 探测（隔离 home + headless Edge）确认 #root margin 机制
+  生效、frame 的 0.3s grid 过渡在位（修复目标明确）；lib 三处内联修补带计数
+  断言落地，node --check 过；better-sidebar 系 48/48 测试绿。
+- **补丁（同日第四案，CodeReview 三视角彻查）：修复从未到达运行时入口 +
+  贴板值校准 + 四产物/payload 统一**。三份审查交叉实锤：①**运行时真正加载
+  的入口是 `lib/client-registry.js`**（dsh.plugin.json `client.main`）——此前
+  所有修复只打在 client.js 上，入口一份都没拿到，且它连 slot 强显规则都
+  没有（HEAD 前已漂移）→ 面板挤压列宽 <900px 时内核容器查询隐藏 slot →
+  **「导航栏彻底不见」**；②用户安装包的 payload 副本整体旧版（push+双计
+  公式 630px 在跑）→ **「半个屏幕间隙」**（400+630−56≈574px@1280 视口 ≈
+  44.8%）；③`client-editor.js`/`client-mermaid.js` chunk 残留 push 规则
+  （css 注入先到先得，抢先时双计复活）；④`right:0` 压正文 28px 且距面板
+  还差 32px 衬带。修：四份 lib 产物统一（删 push + slot 强显 + frame 贴板
+  + 拖动规则，幂等脚本带计数断言）、src 同步校准为
+  `right:calc(-16px - var(--dsh-composer-side-clearance,16px))`（28px 条
+  整体进入 32px 右衬带、右缘贴列缘=面板左边框，贴板且不遮正文）、payload
+  副本刷新。实机 CDP 终验：push 规则 0 注入、slot 强显+frame 贴板生效
+  （面板开 right=-32px / 关恢复官方值）；chunk 重试测试 22/22 绿。
+
+### feat(workspace)：侧栏工作区「置顶到列表顶部」（⋯ 菜单，可多选）
+
+- **功能**：左侧栏工作区分组行的 ⋯ 菜单新增「置顶到列表顶部 / 取消置顶」：
+  - 可多选：置顶的工作区恒排最前，按置顶时间降序（最近置顶最上；同毫秒
+    连点由单调通涨时间戳保证顺序确定）；未置顶区保持宿主原序（手动排序 /
+    拖拽 / 最近更新均不受影响）；未分组桶不显示置顶项；
+  - 持久化：localStorage（键 `dsh-desktop.workspace-pins.v1`，按 workspaceId
+    记账——重命名不丢；损坏内容整体忽略）；
+  - 视觉：置顶行 folder 图标着主题色 + 标题前主题色小圆点（inline style，
+    深浅主题自动跟随，零 CSS 注入）；
+  - 响应式：模块级 store（版本号 + listeners）+ `useWorkspacePinVersion`
+    hook；版本号进 SessionTree 的 groups useMemo deps——切置顶即时重排。
+- **实现**：`scripts/patch-workspace-pin.js` root 应用器（靶
+  `dsh-client-ui-workspace/lib/client.js`，11 个锚点：store/hook 区/菜单项/
+  onSelect/folder 色/圆点/deriveGroups 排序/SessionTree/deps/zh/en）；
+  注册 `workspace-pin`（order 215，锚点基于 open-project-dir 应用后文本，
+  两者改动面互不重叠）。补丁注册数 60→61（ta3 / ta6 矩阵·哨兵计数同步）。
+- **测试**：`unit-workspace-pin.test.js` 8 例——夹具应用/幂等/锚缺失不落盘 /
+  真实 vendored 副本注入后语法合法 / CORE 行为（vm 隔离同源验证：切换、多选
+  降序、取消恢复、未分组不参与、畸形存储容错）/ 现场锚点哨兵。
+- **顺手清理**：摘除 rootAppliers 两个孤儿导出（`patchToolNameMojibake` /
+  `patchSchemaBooleanRequired`——均已从 boot 编排退役但导出残留，ta6 B 哨兵
+  长期存量红；实现与单测保留，需量时重登记 spec）。
+
 ### fix(flash)：选择工作文件夹时「跳闪」（chip 闪回「选择工作区」+ 输入框瞬时禁用）
 
 - **现象**：选完工作文件夹后，对话区头部短暂闪回「选择工作区」（文件夹图标换成

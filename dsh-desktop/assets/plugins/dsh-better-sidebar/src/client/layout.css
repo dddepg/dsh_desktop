@@ -66,6 +66,14 @@ body[data-dsh-sidebar-dragging] #root :has(> [data-slot="conversation"]) {
   transition: none;
 }
 
+/* 拖动调宽时官方 AppFrame 根（cHLsAW_frame，0.1.1-rc 系 css-modules
+   hash；带 grid-template-columns 0.3s 过渡）也必须退出动画：面板让位引起
+   的重排若落在它的过渡属性上，导航条/列宽会以 0.3s 缓动追赶指针——
+   用户实报「不是恒等跟随、快速突变」。hash 漂移时规则自然失配，无害。 */
+body[data-dsh-sidebar-dragging] .cHLsAW_frame {
+  transition: none !important;
+}
+
 /* DSH 0.1.x gives external settings sections a generic gear and exposes no
    icon field in the settings.section contract. settings-nav-icon.ts marks
    only this plugin's localized row; render the requested Lucide

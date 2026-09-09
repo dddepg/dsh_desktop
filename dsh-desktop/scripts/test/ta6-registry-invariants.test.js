@@ -177,7 +177,11 @@ test('E. order 全局唯一、组内升序、补丁间依赖序成立', () => {
   // 输入」勾选——手声明路由不写 input 时 pi-ai 恒回落 ["text"]，多模态模型被当
   // 文本模型拒收图片；靶 dsh-client-ui-settings-models/lib/client.js，与
   // settings-models-resilience 同靶不同区段）。
-  assert.equal(PATCH_SPECS.length, 60, 'spec 总数应为 60');
+  // 62 = 60（上一基线）+ 2 项新增：workspace-pin（侧栏工作区 ⋯ 菜单「置顶到
+// 列表顶部」，可多选降序压顶、localStorage 持久化）与 preset-seat-fix（模式
+// chip 选一次后 busy 卡死——remotePresets 调用点双错误修复）；均为 root
+// 应用器（order 215/216，靶 dsh-client-ui-workspace / dsh-client-ui-agent-preset）。
+assert.equal(PATCH_SPECS.length, 62, 'spec 总数应为 62');
   const orders = PATCH_SPECS.map((s) => s.order);
   assert.equal(new Set(orders).size, orders.length, 'order 必须全局唯一');
   const byId = Object.fromEntries(PATCH_SPECS.map((s) => [s.id, s]));

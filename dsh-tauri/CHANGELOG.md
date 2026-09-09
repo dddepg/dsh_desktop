@@ -2,6 +2,71 @@
 
 # DSH Desktop v0.6.3 — 开发中
 
+## 🛰 重点：外部用户日志（260908 三份）反哺的五项根治
+
+> 取材：rizhi（0.5.5→0.6.2 升级崩溃环）、aoxuanheng（Gitee 单源卡死 +
+> 假死 + 插件错配）、jntmh（0.4.1 双源全断卡死旧版）三份实机日志。
+
+- **更新通道根治：Gitee 分片镜像 + 壳侧分片下载**（aoxuanheng/jntmh 类）。
+  实爆链：win-x64 安装包 ~110MB 超 Gitee 100MB/附件限 → mirror-gitee 跳过
+  上传（「回落 GitHub」）→ GitHub 不可达的国内用户 Gitee 源查无资产 →
+  「已查 [\"Gitee\"]，均无 windows/x86_64 可用安装包」永久卡死。修三层：
+  ① workflow mirror-gitee 对超限资产改按 `<原名>.part1/.part2/…` 分片
+  镜像（每片 ≤80MiB、片号 1 起无补零、≤9 片；Verify 步改为分片套完整性
+  校验：缺片/残片均拒发）；② 更新器（updater_client.rs）识别分片套装
+  （`find_part_set`：base 过平台 rank + 片号连续），合成整资产并登记
+  PartsPlan，下载链逐片顺序拼接后按 `<原名>.sha256` 边车整文件校验
+  （哈希锚优先序：digest 缓存 → 同源分片边车 → 跨源 GitHub 边车；Gitee
+  fail-closed 拒下载无锚链不变）；③ verify-update-sources.mjs 同步升级
+  （分片覆盖/连续性/逐片 HEAD 汇总 == GitHub size 核对 + 自检 4 条）。
+  Rust 新增 5 测（解析形态/套装命中/单源回落/直连优先/断片拒绝）。
+- **单实例二次启动：唤起主窗 + 静默退出，不再 panic**（aoxuanheng 实爆：
+  09-07 三次双击全在 panics.log 留「Failed to setup app: DSH Desktop 已
+  在运行」，用户零可见反馈）。文件锁失败路径改为：写 `focus-request`
+  请求文件（`<pid> <millis>`）→ `exit(0)`；首实例 1.5s 轮询发现即
+  show/unminimize/set_focus 主窗后删文件（millis 去重；唤窗 panic 隔离；
+  退出态停摆）——覆盖 tauri-plugin-single-instance 管道在首实例启动窗口期
+  未就位的缝隙。shell-core 新增 3 测。
+- **dsh CLI shim 写入降级**（rizhi 实爆：`写 shim 失败: 拒绝访问 (os error 5)`
+  ——安装目录只读/杀软锁写）：安装根写失败（任一 io 错）自动降级
+  `%LOCALAPPDATA%\DSH Desktop\bin`，PATH 追加目标随 shim 实际落点；新增
+  降级目录形态与写入幂等 2 测。
+- **内核假死取证**（aoxuanheng 实爆：×1..×7 反复重置后 kill -1，只有「端口
+  通、HTTP 无响应」一条线索）：探活环每个假死 tick 采样内核进程 CPU 时间
+  增量（OpenProcess+GetProcessTimes，Windows；非 Windows/WSL 模式标注缺席），
+  日志定性「忙环形态（事件循环被同步长任务独占）」vs「阻塞/挂起形态」；
+  健康 tick 复位基线。判死仍走回合感知阈值，取证仅定性。新增采样/换算 2 测。
+- **回滚后重打补丁（升级崩溃环的崩溃环）**（rizhi 实爆：cardian 崩 → 回滚
+  复活旧 node_modules（未打隔离补丁的旧 loader）→ float-window 缺包被旧
+  loader re-throw 成整树 fatal → 崩溃环转恢复页）：sidecar 新增
+  `patches-apply` 单步命令（与 boot 同款后端解析/集成装配，失败容忍），
+  supervisor 回滚层接线 guard-restore → guard-repair → **patches-apply** →
+  三次拉起——缺包容错交还给 loader 树级隔离，回滚不再被旧拷贝反咬。
+  sidecar 新增幂等契约测。
+
+### 同批加固（第二轮）
+
+- **openclaw-bridge 设置注入缺失修复**（两份用户日志共有的
+  `settings section unavailable (cannot get property "settings" without
+  inject)` 根因）：内置 0.8.0 打包时 inject 数组遭截丢 `"settings"`
+  （0.7.1 源码有）——设置页永久读不到/写不进 ClawBot 配置，只能靠环境
+  变量。补回注入 + 两级 register 降级（旧格式存储解析不过时空 base 重试，
+  热更链路恢复而非永久降级）；源码仓同步。
+- **假死事故报告**：两处假死强杀点（阈值判定 / defer 封顶）落 incident
+  （`zombie-restart` / `zombie-restart-deferred`），携 CPU 定性证据链
+  （最近 6 tick 忙环/阻塞标签）与回合计数——用户反馈一份报告即携带完整
+  定性依据，不再需要现场翻 desktop.log。
+- **Gitee 分片随发 merge.bat**：超限资产分片镜像时同步生成并上传
+  `<原名>.merge.bat`（CRLF+ASCII，copy /b 拼接 + certutil 哈希核对）——
+  GitHub/Gitee 双源都不通的老壳用户（0.4.x 实爆形态）纯手动路径也能
+  自证完整性。更新器 BadManifest 错误文案附手动下载指引（含 Gitee
+  Releases 地址与 merge.bat 用法）。
+- **旧产品残留检测**：sidecar boot 检测 DSH_HOME 指向改名前 Deepseek
+  Harness X 目录时告警（双装共存导致会话/插件在两套 home 间漂移的实爆
+  形态），只告警不自动迁移。
+- **定期重检更新**：启动 15s 一次改为 6h 循环重检（分段睡眠 ≤6s 退出
+  响应；emit panic 隔离；退出态停摆）——常年挂机用户当天即被新版敲门。
+
 ## 🐛 重点：思考行折叠态空白（contain:size 回归）
 
 - **症状**：「思考」行在折叠状态显示为一条空白文本框（标题与首行摘要不可见），展开后正常。

@@ -13,6 +13,13 @@
  *
  * 用法（vendor node）：
  *   node cli.js boot [--app-dir <dsh-desktop>] [--home <~/.dsh>]
+ *   node cli.js patches-apply [--app-dir <dsh-desktop>] [--home <~/.dsh>]
+ *                             # 仅重跑 boot 链的 patches 步：守护瀑布回滚层
+ *                             # 在 guard-restore 后调用——回滚会把快照里的旧
+ *                             # node_modules 复活（绕过 sync/patches 写下的
+ *                             # 隔离补丁，v0.6.2 实爆：回滚后 float-window
+ *                             # 缺包直接 fatal 崩溃环），重打一遍 loader 隔离
+ *                             # /容错补丁再拉起内核。
  *   node cli.js plugin-list | plugin-set-enabled <id> <0|1>
  *   node cli.js plugin-uninstall <id> | plugin-restore <id>
  *   node cli.js plugin-check-updates | plugin-update <id>
@@ -695,6 +702,15 @@ async function cmdBoot(args, ctx) {
   const backend = await resolveBackendCtx({ appDir, home: ctx.home, userDataDir });
   const home = backend.home;
   const integration = makeIntegration(mods, { appDir, home, userDataDir, wsl: backend.wsl });
+  // 旧产品残留检测（v0.6.3）：DSH_HOME 指向改名前 Deepseek Harness X 目录
+  // 时告警——双装共存会导致会话/插件在两套 home 间漂移（用户实爆：session
+  // watcher 在 C:\...\.dsh 与 E:\Agent\Deepseek Harness X\.dsh-home 间来回切，
+  // profile 的 pnpm store 链接也指向旧盘）。只告警不自动迁移（用户数据，
+  // 宁可不动）；排查指引见 docs/troubleshooting.md。
+  if (/deepseek harness x/i.test(home)) {
+    log('legacy-home: 检测到 DSH_HOME 指向旧版 Deepseek Harness X 目录: ' + home);
+    log('legacy-home: 若非有意双装，建议卸载旧产品并取消指向该目录的 DSH_HOME 环境变量（会话与插件数据将统一回当前 ~/.dsh）；详见 docs/troubleshooting.md「多套安装/旧产品残留」');
+  }
   if (backend.wsl) {
     log('WSL 托管模式: distro=' + backend.wsl.distro + ' installDir=' + backend.wsl.installDir
       + ' home(UNC)=' + backend.wsl.uncHome
@@ -799,6 +815,34 @@ async function cmdBoot(args, ctx) {
   return result;
 }
 
+/**
+ * patches-apply：仅重跑 boot 链的 patches 步（与 boot 同款后端解析与集成装配）。
+ *
+ * 消费方：supervisor 守护瀑布回滚层（guard-restore → guard-repair → 本命令
+ * → 三次拉起）。回滚复活的旧 node_modules 里，loader/app-boot 可能是未打
+ * 隔离补丁的旧拷贝——单插件失败会被 re-throw 成整树 fatal（v0.6.2 实爆：
+ * 回滚后 @deepseek-ai/dsh-float-window 缺包 → 内核启动期退出 → 崩溃环转
+ * 恢复页）。重打补丁后，缺包容错由 loader 树级隔离完成，回滚不再被旧拷贝
+ * 反咬。失败容忍（ok:true + warning）——补丁链异常不得阻断回滚拉起（与
+ * boot 步骤容忍策略同口径）。
+ */
+async function cmdPatchesApply(args, ctx) {
+  const { mods, appDir, userDataDir } = ctx;
+  const backend = await resolveBackendCtx({ appDir, home: ctx.home, userDataDir });
+  const home = backend.home;
+  const integration = makeIntegration(mods, { appDir, home, userDataDir, wsl: backend.wsl });
+  const t0 = Date.now();
+  let warning = null;
+  let report = null;
+  try {
+    report = (await integration.applyPatches()) ?? null;
+  } catch (err) {
+    warning = String((err && err.message) || err);
+    log('patches-apply 异常（容忍，不阻断回滚拉起）: ' + warning);
+  }
+  return { ok: true, ms: Date.now() - t0, report, warning, backend: backend.backend };
+}
+
 function ctxFromArgs(argv) {
   let appDir = null, home = null;
   for (let i = 0; i < argv.length; i++) {
@@ -822,6 +866,7 @@ async function main() {
   try {
     switch (cmd) {
       case 'boot': return emit(await cmdBoot(rest, ctx()));
+      case 'patches-apply': return emit(await cmdPatchesApply(rest, ctx()));
       case 'plugin-list': {
         const c = ctx();
         return emit(createPluginManager(c.mods, c).collect());

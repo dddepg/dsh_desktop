@@ -46,7 +46,11 @@ import { qrSvg } from "./core/qrcode.js";
 import { OpenAiCompatAdapter, PROVIDER_ID } from "./openai-compat.js";
 
 const name = "@deepseek-ai/dsh-openclaw-bridge";
-const inject = ["webServer", "agents", "sessions", "agentDefaultModel", "llm"];
+// "settings" 必须在 inject 里：ctx.settings 是 cordis 服务代理，未声明即访问
+// 抛 "cannot get property 'settings' without inject"——apply() 里设置节注册
+// 会永久降级为「设置页读不到/写不进配置」（0.6.x 两份用户日志实爆；
+// 0.7.1 源码有、0.8.0 打包时遭截丢，此处补回）。
+const inject = ["webServer", "agents", "sessions", "agentDefaultModel", "llm", "settings"];
 
 // health 报告的已实现渠道列表；apply() 里按 CHANNEL_TABLE 刷新。
 let implementedChannels = ["wechat"];
@@ -812,8 +816,17 @@ function apply(ctx, config) {
   const customRegistration = ctx.llm.registerAdapter([PROVIDER_ID], customAdapter);
   // alpha.4 迁移：旧的 install 辅助已从 dsh-settings 移除，改为
   // ctx.settings.register 直注册（ns 裸字符串）+ scope.get 取值 + scope.watch 热更。
+  // 两级降级：携带旧 config 注册失败（0.5.x 旧格式存储解析不过）时，用空 base
+  // 重试一次——设置页从默认值重新开始、热更链路恢复，而不是永久降级为
+  // 「仅环境变量配置」（旧 config 仍在 settings.yaml 里，用户可在设置页重填）。
   try {
-    const scope = ctx.settings.register(NS, Config, { base: config || {} });
+    let scope;
+    try {
+      scope = ctx.settings.register(NS, Config, { base: config || {} });
+    } catch (baseError) {
+      console.warn("[openclaw-bridge] stored config rejected, retrying with defaults: " + ((baseError && baseError.message) || baseError));
+      scope = ctx.settings.register(NS, Config, { base: {} });
+    }
     liveConfig = () => scope.get(); // source 是 () => scope.get() 的取值函数
     scope.watch(() => {
       // 新映射会话（新 model 名）会使用新配置；已有会话保持连续性。
@@ -826,7 +839,7 @@ function apply(ctx, config) {
       console.log("[openclaw-bridge] settings updated: " + JSON.stringify(redacted));
     });
   } catch (error) {
-    console.warn("[openclaw-bridge] settings section unavailable (invalid stored config): " + ((error && error.message) || error));
+    console.warn("[openclaw-bridge] settings section unavailable (settings service absent): " + ((error && error.message) || error));
   }
   const disposeChat = ctx.webServer.register({ kind: "exact", path: CHAT_ROUTE, handler: (req, res) => handleChat(ctx, req, res) });
   const disposeHealth = ctx.webServer.register({

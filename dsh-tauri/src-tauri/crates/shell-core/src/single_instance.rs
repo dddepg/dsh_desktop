@@ -77,6 +77,42 @@ impl Drop for SingleInstanceGuard {
     }
 }
 
+/// 第二实例 → 首实例的「唤起主窗」请求（`app_data/focus-request`，内容
+/// `<pid> <unix_millis>`）。
+///
+/// 与 tauri-plugin-single-instance 的管道回调互补：首实例尚在启动、管道
+/// 监听未就位（或管道失败）的窗口期里，第二实例会落到本壳文件锁的失败
+/// 路径——旧路径直接 panic（v0.6.2 用户实爆：三次二次启动全在 panics.log
+/// 留下「Failed to setup app: DSH Desktop 已在运行」，用户双击无任何可见
+/// 反馈）。新路径：第二实例写本请求文件后 exit(0)，首实例轮询发现即
+/// show/unminimize/set_focus 主窗并删除文件（millis 去重防重复唤起）。
+pub fn write_focus_request(app_data: &std::path::Path) -> std::io::Result<()> {
+    let path = app_data.join("focus-request");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    std::fs::write(&path, format!("{} {}", std::process::id(), millis))
+}
+
+/// 读请求文件 → `(pid, unix_millis)`。不存在/内容不可解析 → None
+///（不可解析也返回 None： watcher 靠 millis 变化触发，垃圾内容无从去重）。
+pub fn read_focus_request(app_data: &std::path::Path) -> Option<(u32, u128)> {
+    let raw = std::fs::read_to_string(app_data.join("focus-request")).ok()?;
+    let mut it = raw.split_whitespace();
+    let pid = it.next()?.parse::<u32>().ok()?;
+    let millis = it.next().and_then(|m| m.parse::<u128>().ok()).unwrap_or(0);
+    Some((pid, millis))
+}
+
+/// 消费后删除请求文件（幂等；删除失败无害——watcher 有 millis 去重兜底）。
+pub fn clear_focus_request(app_data: &std::path::Path) {
+    let _ = std::fs::remove_file(app_data.join("focus-request"));
+}
+
 /// 陈锁判定：文件内 pid 不再存活（或内容不可读/非法——按陈锁处理，
 /// 宁可误删锁也不把用户锁死在「永远已在运行」）。
 fn stale_lock(path: &std::path::Path) -> bool {
@@ -161,5 +197,34 @@ mod tests {
         fs::write(&p, std::process::id().to_string()).unwrap();
         assert!(SingleInstanceGuard::acquire(&p).is_err(), "活进程的锁不得回收");
         let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn focus_request_roundtrip_and_clear() {
+        let dir = std::env::temp_dir().join(format!("dsh-focus-req-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_focus_request(&dir).expect("写唤起请求");
+        let (pid, m1) = read_focus_request(&dir).expect("读回唤起请求");
+        assert_eq!(pid, std::process::id());
+        assert!(m1 > 0, "unix millis 非零");
+        clear_focus_request(&dir);
+        assert_eq!(read_focus_request(&dir), None, "消费后应读到 None");
+        // 两次写入 millis 不同 → watcher 可靠变化去重。
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        write_focus_request(&dir).unwrap();
+        let (_, m2) = read_focus_request(&dir).unwrap();
+        assert!(m2 > m1, "millis 单调（去重锚）: {m1} -> {m2}");
+        clear_focus_request(&dir);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn focus_request_garbage_is_none() {
+        let dir = std::env::temp_dir().join(format!("dsh-focus-garbage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("focus-request"), "not a request").unwrap();
+        assert_eq!(read_focus_request(&dir), None, "垃圾内容不触发唤起");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

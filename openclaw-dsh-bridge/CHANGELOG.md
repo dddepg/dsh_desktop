@@ -3,6 +3,16 @@
 本项目为 DSH（DeepSeek Harness）插件：微信官方 ClawBot / OpenClaw 网关 → DSH 会话桥接。
 版本号遵循语义化版本；每次发布附测试状态（单元断言数由 `scripts/test.ps1` 输出）。
 
+## [0.8.1] — 2026-09（设置注入回归修复）
+
+### 修复
+- **inject 补回 `"settings"`**：0.8.0 打包产物丢失该注入项，`ctx.settings`
+  访问抛 `cannot get property "settings" without inject`——设置页永久
+  读不到/写不进 ClawBot 配置，只能靠环境变量（两份用户日志实爆）。
+- **两级 register 降级**：携带旧 config 注册失败（旧格式存储解析不过）时
+  空 base 重试一次——热更链路恢复（设置页从默认值重新开始）而不是永久
+  降级为仅环境变量配置。
+
 ## [0.7.1] — 2026-09（适配 DSH 内核 alpha.4 设置 API）
 
 ### 修复
